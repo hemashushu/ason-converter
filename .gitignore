@@ -1,0 +1,29 @@
+.DS_Store
+
+/TODO
+/REF
+/DEPRECATED
+/IGNORE
+
+/target
+
+output/
+target/
+build/
+
+*.o
+
+*.elf
+*.so
+*.so.1
+*.so.1.0.0
+
+*.macho
+*.dylib
+
+
+# Added by cargo
+#
+# already existing elements were commented out
+
+#/target
