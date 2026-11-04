@@ -72,16 +72,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "ason-converter"
+name = "ason-convert"
 version = "0.1.0"
 dependencies = [
  "ason",
  "asonb",
  "base64",
  "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ason-convert-cli"
+version = "0.1.0"
+dependencies = [
+ "ason-convert",
+ "asonb",
  "clap",
  "clap_complete",
- "serde",
  "serde_json",
 ]
 

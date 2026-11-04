@@ -5,5 +5,5 @@
 // For more details, see the LICENSE, LICENSE.additional, and CONTRIBUTING files.
 
 fn main() -> std::process::ExitCode {
-    ason_converter::cli::run_ason2j()
+    ason_convert_cli::run_ason2b()
 }

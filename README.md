@@ -25,8 +25,9 @@ ASON Converter is a tool for converting between ASON, ASONB (the binary format o
 - [5. Usage](#5-usage)
   - [`ason2b`](#ason2b)
   - [`ason2j`](#ason2j)
-- [6. Links](#6-links)
-- [7. License](#7-license)
+- [6. Using as a Library](#6-using-as-a-library)
+- [7. Links](#7-links)
+- [8. License](#8-license)
 
 <!-- /code_chunk_output -->
 
@@ -321,7 +322,13 @@ Promotion to `f64` may lose integer precision for large values.
 You can install ASON Converter using Cargo:
 
 ```sh
-cargo install ason-converter
+cargo install ason-convert-cli
+```
+
+Or install from the local path (within the root of the source tree):
+
+```sh
+cargo install --path crates/ason-convert-cli
 ```
 
 ## 5. Usage
@@ -432,13 +439,41 @@ EXAMPLES
         ason2j input.json -b | some_command
 ```
 
-## 6. Links
+## 6. Using as a Library
+
+The core library is the `ason-convert` package. To use a local checkout from another Rust project, add it to that project's `Cargo.toml`:
+
+```toml
+[dependencies]
+ason-convert = "0.1.0"
+```
+
+The library API returns `Result<_, ConversionError>`, where `ConversionError` implements `std::error::Error`. For example, convert ASON to ASONB, back to ASON, and then to JSON:
+
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+  let input = r#"{name: "Ada"}"#;
+
+  let binary = ason_convert::ason_to_asonb(input)?;
+  let ason = ason_convert::asonb_to_ason(&binary)?;
+  let json = ason_convert::ason_to_json(&ason)?;
+
+  println!("{json}");
+  Ok(())
+}
+```
+
+For JSON or JSONC input, use `json_to_ason` or `json_to_asonb`. `format_json` parses JSONC, discards comments, and returns formatted JSON. `asonb_to_json` converts a complete ASONB document; `asonb_reader_to_ason` and `asonb_reader_to_json` accept `Read`/`Write` streams and stream only when the root value is a multi-chunk List.
+
+The `ason-convert` library is separate from `ason-convert-cli`, so depending on the library does not add the CLI's `clap` dependencies. The package is not published independently yet, and its ASON/ASONB dependencies currently use local absolute paths; using it outside this development environment requires making those dependencies available through portable Git or registry references.
+
+## 7. Links
 
 - [ASON Specification](https://github.com/hemashushu/ason/blob/main/docs/specification.md)
 - [ASONB Specification](https://github.com/hemashushu/asonb/blob/main/README.md)
 - [ASON Library (Rust)](https://github.com/hemashushu/ason)
 - [ASONB Library (Rust)](https://github.com/hemashushu/asonb)
 
-## 7. License
+## 8. License
 
 This project is licensed under the MPL 2.0 License with additional terms. See [LICENSE](./LICENSE) and [LICENSE.additional](./LICENSE.additional).
