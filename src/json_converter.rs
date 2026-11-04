@@ -1,0 +1,952 @@
+// Copyright (c) 2026 Hemashushu <hippospark@gmail.com>, All rights reserved.
+//
+// This Source Code Form is subject to the terms of
+// the Mozilla Public License version 2.0 and additional exceptions.
+// For more details, see the LICENSE, LICENSE.additional, and CONTRIBUTING files.
+
+use std::{
+    borrow::Cow,
+    io::{Cursor, Read, Write},
+};
+
+use ason::{Value as AsonValue, VariantValue};
+use asonb::{DocumentSchema, Encoding, Field, Type, Value as AsonbValue, Variant};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use chrono::SecondsFormat;
+use serde_json::{Map, Number, Value as JsonValue};
+
+use crate::{ConversionError, Result, ason_converter::from_asonb_value, jsonc::JsonInput};
+
+#[derive(Clone)]
+struct Node {
+    value: AsonValue,
+    ty: Type,
+}
+
+pub fn json_to_ason(input: &str) -> Result<String> {
+    let node = convert_json_value(crate::jsonc::parse_jsonc(input)?)?;
+    Ok(ason::ser_value_to_string(&node.value)?)
+}
+
+pub fn json_to_asonb(input: &str) -> Result<Vec<u8>> {
+    let node = convert_json_value(crate::jsonc::parse_jsonc(input)?)?;
+    let schema = DocumentSchema::new(node.ty.clone());
+    let value = encode_node(&node.value, &node.ty)?;
+    let mut output = Vec::new();
+    asonb::ser_value_to_writer(&schema, &value, &mut output)?;
+    Ok(output)
+}
+
+pub fn format_json(input: &str) -> Result<String> {
+    let value = json_to_json_value(crate::jsonc::parse_jsonc(input)?);
+    Ok(serde_json::to_string_pretty(&value)?)
+}
+
+pub fn ason_to_json(input: &str) -> Result<String> {
+    let value = ason::de_value_from_str(input)?;
+    json_to_pretty_string(&ason_value_to_json(&value)?)
+}
+
+pub fn asonb_to_json(input: &[u8]) -> Result<String> {
+    let (schema, value) = asonb::de_value_from_reader(Cursor::new(input))?;
+    let value = from_asonb_value(&schema, &schema.root, &value)?;
+    json_to_pretty_string(&ason_value_to_json(&value)?)
+}
+
+pub fn asonb_reader_to_json<R: Read, W: Write>(input: R, output: &mut W) -> Result<()> {
+    let mut document = asonb::value_document_reader(input)?;
+    let schema = document.schema().clone();
+    let root_type = document.root_type().clone();
+    if let Type::List(_, item_type) = &root_type
+        && document.is_streaming_list()
+    {
+        output.write_all(b"[")?;
+        let mut first = true;
+        for value in document {
+            let value = value?;
+            let value = from_asonb_value(&schema, item_type, &value)?;
+            let json = json_to_pretty_string(&ason_value_to_json(&value)?)?;
+            if !first {
+                output.write_all(b",")?;
+            }
+            output.write_all(b"\n")?;
+            for (index, line) in json.lines().enumerate() {
+                if index > 0 {
+                    output.write_all(b"\n")?;
+                }
+                output.write_all(b"    ")?;
+                output.write_all(line.as_bytes())?;
+            }
+            first = false;
+        }
+        if !first {
+            output.write_all(b"\n")?;
+        }
+        output.write_all(b"]\n")?;
+    } else {
+        let value = document
+            .next()
+            .transpose()?
+            .ok_or_else(|| ConversionError("ASONB document has no root value.".into()))?;
+        let value = from_asonb_value(&schema, &root_type, &value)?;
+        output.write_all(json_to_pretty_string(&ason_value_to_json(&value)?)?.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn ason_value_to_json(value: &AsonValue) -> Result<JsonValue> {
+    let json = match value {
+        AsonValue::I8(value) => JsonValue::Number((*value).into()),
+        AsonValue::I16(value) => JsonValue::Number((*value).into()),
+        AsonValue::I32(value) => JsonValue::Number((*value).into()),
+        AsonValue::I64(value) => JsonValue::Number((*value).into()),
+        AsonValue::U8(value) => JsonValue::Number((*value).into()),
+        AsonValue::U16(value) => JsonValue::Number((*value).into()),
+        AsonValue::U32(value) => JsonValue::Number((*value).into()),
+        AsonValue::U64(value) => JsonValue::Number((*value).into()),
+        AsonValue::F32(value) => number_from_f64(*value as f64)?,
+        AsonValue::F64(value) => number_from_f64(*value)?,
+        AsonValue::Bool(value) => JsonValue::Bool(*value),
+        AsonValue::Char(value) => JsonValue::String(value.to_string()),
+        AsonValue::String(value) => JsonValue::String(value.clone()),
+        AsonValue::DateTime(value) => {
+            JsonValue::String(value.to_rfc3339_opts(SecondsFormat::Secs, true))
+        }
+        AsonValue::Bytes(value) => JsonValue::String(STANDARD.encode(value)),
+        AsonValue::List(values) | AsonValue::Tuple(values) => JsonValue::Array(
+            values
+                .iter()
+                .map(ason_value_to_json)
+                .collect::<Result<_>>()?,
+        ),
+        AsonValue::Object(fields) => {
+            let mut object = Map::new();
+            for (name, value) in fields {
+                object.insert(name.clone(), ason_value_to_json(value)?);
+            }
+            JsonValue::Object(object)
+        }
+        AsonValue::Map(entries) => JsonValue::Array(
+            entries
+                .iter()
+                .map(|(key, value)| {
+                    let mut pair = Map::new();
+                    pair.insert("key".into(), ason_value_to_json(key)?);
+                    pair.insert("value".into(), ason_value_to_json(value)?);
+                    Ok(JsonValue::Object(pair))
+                })
+                .collect::<Result<_>>()?,
+        ),
+        AsonValue::Enumeration {
+            variant, payload, ..
+        } => {
+            let mut object = Map::new();
+            object.insert("variant".into(), JsonValue::String(variant.clone()));
+            match payload {
+                VariantValue::Unit => {}
+                VariantValue::Newtype(value) => {
+                    object.insert("value".into(), ason_value_to_json(value)?);
+                }
+                VariantValue::Tuple(values) => {
+                    object.insert(
+                        "value".into(),
+                        JsonValue::Array(
+                            values
+                                .iter()
+                                .map(ason_value_to_json)
+                                .collect::<Result<_>>()?,
+                        ),
+                    );
+                }
+                VariantValue::Struct(fields) => {
+                    let mut value = Map::new();
+                    for (name, item) in fields {
+                        value.insert(name.clone(), ason_value_to_json(item)?);
+                    }
+                    object.insert("value".into(), JsonValue::Object(value));
+                }
+            }
+            JsonValue::Object(object)
+        }
+        AsonValue::Option(None) => JsonValue::Null,
+        AsonValue::Option(Some(value)) => ason_value_to_json(value)?,
+    };
+    Ok(json)
+}
+
+fn number_from_f64(value: f64) -> Result<JsonValue> {
+    Number::from_f64(value)
+        .map(JsonValue::Number)
+        .ok_or_else(|| ConversionError("JSON cannot represent NaN or infinity.".into()))
+}
+
+fn json_to_pretty_string(value: &JsonValue) -> Result<String> {
+    Ok(serde_json::to_string_pretty(value)?)
+}
+
+fn json_to_json_value(input: JsonInput) -> JsonValue {
+    match input {
+        JsonInput::Null => JsonValue::Null,
+        JsonInput::Bool(value) => JsonValue::Bool(value),
+        JsonInput::Signed(value) => JsonValue::Number(Number::from(value)),
+        JsonInput::Unsigned(value) => JsonValue::Number(Number::from(value)),
+        JsonInput::Float(value) => Number::from_f64(value)
+            .map(JsonValue::Number)
+            .unwrap_or(JsonValue::Null),
+        JsonInput::String(value) => JsonValue::String(value),
+        JsonInput::Array(values) => {
+            JsonValue::Array(values.into_iter().map(json_to_json_value).collect())
+        }
+        JsonInput::Object(fields) => {
+            let mut object = Map::new();
+            for (key, value) in fields {
+                object.insert(key, json_to_json_value(value));
+            }
+            JsonValue::Object(object)
+        }
+    }
+}
+
+fn convert_json_value(input: JsonInput) -> Result<Node> {
+    match input {
+        JsonInput::Null => Ok(option_none(Type::I32)),
+        JsonInput::Bool(value) => Ok(Node {
+            value: AsonValue::Bool(value),
+            ty: Type::Bool,
+        }),
+        JsonInput::Signed(value) => Ok(if i32::try_from(value).is_ok() {
+            Node {
+                value: AsonValue::I32(value as i32),
+                ty: Type::I32,
+            }
+        } else {
+            Node {
+                value: AsonValue::I64(value),
+                ty: Type::I64,
+            }
+        }),
+        JsonInput::Unsigned(value) => Ok(if value <= i32::MAX as u64 {
+            Node {
+                value: AsonValue::I32(value as i32),
+                ty: Type::I32,
+            }
+        } else if value <= i64::MAX as u64 {
+            Node {
+                value: AsonValue::I64(value as i64),
+                ty: Type::I64,
+            }
+        } else {
+            Node {
+                value: AsonValue::U64(value),
+                ty: Type::U64,
+            }
+        }),
+        JsonInput::Float(value) => Ok(Node {
+            value: AsonValue::F64(value),
+            ty: Type::F64,
+        }),
+        JsonInput::String(value) => Ok(Node {
+            value: AsonValue::String(value),
+            ty: Type::String(Encoding::Regular),
+        }),
+        JsonInput::Array(values) => convert_array(values),
+        JsonInput::Object(fields) => convert_object(fields),
+    }
+}
+
+fn convert_array(values: Vec<JsonInput>) -> Result<Node> {
+    if values.is_empty() {
+        return Ok(Node {
+            value: AsonValue::List(Vec::new()),
+            ty: Type::List(Encoding::Regular, Box::new(Type::I32)),
+        });
+    }
+
+    if values
+        .iter()
+        .any(|value| matches!(value, JsonInput::Object(_)))
+        && values
+            .iter()
+            .all(|value| matches!(value, JsonInput::Object(_) | JsonInput::Null))
+        && let Some(node) = convert_object_array(&values)?
+    {
+        return Ok(node);
+    }
+
+    let contains_null = values.iter().any(|value| matches!(value, JsonInput::Null));
+    let mut nodes = values
+        .into_iter()
+        .map(convert_json_value)
+        .collect::<Result<Vec<_>>>()?;
+
+    if contains_null {
+        let value_nodes = nodes
+            .iter()
+            .filter_map(|node| match &node.value {
+                AsonValue::Option(None) => None,
+                AsonValue::Option(Some(value)) => Some(Node {
+                    value: (**value).clone(),
+                    ty: option_inner_type(&node.ty).unwrap_or(Type::I32),
+                }),
+                _ => Some(node.clone()),
+            })
+            .collect::<Vec<_>>();
+        let inner_type = if value_nodes.is_empty() {
+            Type::I32
+        } else {
+            unify_nodes(&value_nodes)?.0
+        };
+        for node in &mut nodes {
+            match &node.value {
+                AsonValue::Option(None) => *node = option_none(inner_type.clone()),
+                AsonValue::Option(Some(value)) => {
+                    let inner = coerce_value((**value).clone(), &inner_type)?;
+                    *node = option_some(inner, inner_type.clone());
+                }
+                _ => {
+                    let value = coerce_value(node.value.clone(), &inner_type)?;
+                    *node = option_some(value, inner_type.clone());
+                }
+            }
+        }
+    }
+
+    let (item_type, values) = unify_nodes(&nodes)?;
+    Ok(Node {
+        value: AsonValue::List(values),
+        ty: Type::List(Encoding::Regular, Box::new(item_type)),
+    })
+}
+
+fn convert_object_array(values: &[JsonInput]) -> Result<Option<Node>> {
+    let mut keys = Vec::new();
+    let objects = values
+        .iter()
+        .filter_map(|value| match value {
+            JsonInput::Object(fields) => Some(fields),
+            JsonInput::Null => None,
+            _ => unreachable!(),
+        })
+        .collect::<Vec<_>>();
+    for fields in &objects {
+        if fields.iter().any(|(key, _)| !is_valid_identifier(key)) {
+            return Ok(None);
+        }
+        for (key, _) in *fields {
+            if !keys.contains(key) {
+                keys.push(key.clone());
+            }
+        }
+    }
+    if keys.is_empty() {
+        return Err(ConversionError(
+            "An empty object in an array has no inferable fields.".into(),
+        ));
+    }
+
+    let mut field_types = Vec::with_capacity(keys.len());
+    let mut rows = vec![Vec::with_capacity(keys.len()); objects.len()];
+    for key in &keys {
+        let field_values = objects
+            .iter()
+            .map(|fields| {
+                fields
+                    .iter()
+                    .find(|(name, _)| name == key)
+                    .map(|(_, value)| value)
+            })
+            .collect::<Vec<_>>();
+        let field_nodes = convert_optional_nodes(&field_values)?;
+        let (field_type, field_values) = unify_nodes(&field_nodes)?;
+        field_types.push(Field::new(key, field_type));
+        for (row, value) in rows.iter_mut().zip(field_values) {
+            row.push((key.clone(), value));
+        }
+    }
+
+    let object_type = Type::Object(String::new(), field_types);
+    let (item_type, row_values) = if values.iter().any(|value| matches!(value, JsonInput::Null)) {
+        let item_type = option_type(object_type.clone());
+        let mut rows = rows.into_iter();
+        let row_values = values
+            .iter()
+            .map(|value| match value {
+                JsonInput::Object(_) => AsonValue::Option(Some(Box::new(AsonValue::Object(
+                    rows.next().expect("one inferred row per object"),
+                )))),
+                JsonInput::Null => AsonValue::Option(None),
+                _ => unreachable!(),
+            })
+            .collect();
+        (item_type, row_values)
+    } else {
+        (
+            object_type,
+            rows.into_iter().map(AsonValue::Object).collect(),
+        )
+    };
+    Ok(Some(Node {
+        value: AsonValue::List(row_values),
+        ty: Type::List(Encoding::Regular, Box::new(item_type)),
+    }))
+}
+
+fn convert_optional_nodes(values: &[Option<&JsonInput>]) -> Result<Vec<Node>> {
+    let object_count = values
+        .iter()
+        .filter(|value| matches!(value, Some(JsonInput::Object(_))))
+        .count();
+    let only_objects_or_null = values
+        .iter()
+        .all(|value| matches!(value, None | Some(JsonInput::Null | JsonInput::Object(_))));
+
+    if object_count > 1 && only_objects_or_null {
+        let objects = values
+            .iter()
+            .filter_map(|value| match value {
+                Some(JsonInput::Object(_)) => Some((**value.as_ref().unwrap()).clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let Some(grouped) = convert_object_array(&objects)? else {
+            if objects
+                .iter()
+                .any(|value| matches!(value, JsonInput::Object(fields) if fields.is_empty()))
+            {
+                return Err(ConversionError(
+                    "An empty nested object cannot infer a homogeneous Map schema.".into(),
+                ));
+            }
+            return values
+                .iter()
+                .map(|value| match value {
+                    None | Some(JsonInput::Null) => Ok(option_none(Type::I32)),
+                    Some(value) => {
+                        let node = convert_json_value((**value).clone())?;
+                        Ok(option_some(node.value, node.ty))
+                    }
+                })
+                .collect();
+        };
+        let AsonValue::List(object_values) = grouped.value else {
+            unreachable!()
+        };
+        let Type::List(_, object_type) = grouped.ty else {
+            unreachable!()
+        };
+        let mut object_values = object_values.into_iter();
+        return values
+            .iter()
+            .map(|value| match value {
+                Some(JsonInput::Object(_)) => Ok(option_some(
+                    object_values.next().expect("one inferred row per object"),
+                    (*object_type).clone(),
+                )),
+                _ => Ok(option_none((*object_type).clone())),
+            })
+            .collect();
+    }
+
+    values
+        .iter()
+        .map(|value| match value {
+            None | Some(JsonInput::Null) => Ok(option_none(Type::I32)),
+            Some(value) => {
+                let node = convert_json_value((**value).clone())?;
+                Ok(option_some(node.value, node.ty))
+            }
+        })
+        .collect()
+}
+
+fn convert_object(fields: Vec<(String, JsonInput)>) -> Result<Node> {
+    if fields.is_empty() {
+        return Err(ConversionError(
+            "An empty object has no inferable ASON fields.".into(),
+        ));
+    }
+    if fields.iter().all(|(name, _)| is_valid_identifier(name)) {
+        let mut values = Vec::with_capacity(fields.len());
+        let mut types = Vec::with_capacity(fields.len());
+        for (name, value) in fields {
+            let node = convert_json_value(value)?;
+            types.push(Field::new(&name, node.ty));
+            values.push((name, node.value));
+        }
+        Ok(Node {
+            value: AsonValue::Object(values),
+            ty: Type::Object(String::new(), types),
+        })
+    } else {
+        let mut keys = Vec::with_capacity(fields.len());
+        let mut nodes = Vec::with_capacity(fields.len());
+        for (key, value) in fields {
+            keys.push(AsonValue::String(key));
+            nodes.push(convert_json_value(value)?);
+        }
+        let (value_type, values) = unify_nodes(&nodes)?;
+        Ok(Node {
+            value: AsonValue::Map(keys.into_iter().zip(values).collect()),
+            ty: Type::Map(
+                false,
+                Box::new(Type::String(Encoding::Regular)),
+                Box::new(value_type),
+            ),
+        })
+    }
+}
+
+fn option_type(item: Type) -> Type {
+    Type::Enum(
+        "Option".into(),
+        vec![
+            Variant::Unit("None".into()),
+            Variant::Newtype("Some".into(), item),
+        ],
+    )
+}
+
+fn option_none(item: Type) -> Node {
+    Node {
+        value: AsonValue::Option(None),
+        ty: option_type(item),
+    }
+}
+
+fn option_some(value: AsonValue, item: Type) -> Node {
+    Node {
+        value: AsonValue::Option(Some(Box::new(value))),
+        ty: option_type(item),
+    }
+}
+
+fn option_inner_type(ty: &Type) -> Option<Type> {
+    let Type::Enum(name, variants) = ty else {
+        return None;
+    };
+    if name != "Option" {
+        return None;
+    }
+    variants.iter().find_map(|variant| match variant {
+        Variant::Newtype(name, item) if name == "Some" => Some(item.clone()),
+        _ => None,
+    })
+}
+
+fn unify_nodes(nodes: &[Node]) -> Result<(Type, Vec<AsonValue>)> {
+    let ty = unify_type(nodes)?;
+    let values = nodes
+        .iter()
+        .map(|node| coerce_value(node.value.clone(), &ty))
+        .collect::<Result<_>>()?;
+    Ok((ty, values))
+}
+
+fn unify_type(nodes: &[Node]) -> Result<Type> {
+    let Some(first) = nodes.first() else {
+        return Ok(Type::I32);
+    };
+    if nodes.iter().all(|node| node.ty == first.ty) {
+        return Ok(first.ty.clone());
+    }
+
+    if nodes.iter().all(|node| numeric_type(&node.ty)) {
+        return unify_numeric_type(nodes);
+    }
+
+    if nodes.iter().all(|node| matches!(node.ty, Type::List(..))) {
+        let mut item_nodes = Vec::new();
+        for node in nodes {
+            let (Type::List(_, item_type), AsonValue::List(values)) = (&node.ty, &node.value)
+            else {
+                unreachable!()
+            };
+            item_nodes.extend(values.iter().cloned().map(|value| Node {
+                value,
+                ty: (**item_type).clone(),
+            }));
+        }
+        let item_type = unify_type(&item_nodes)?;
+        return Ok(Type::List(Encoding::Regular, Box::new(item_type)));
+    }
+
+    if nodes.iter().all(|node| matches!(node.ty, Type::Map(..))) {
+        let mut key_nodes = Vec::new();
+        let mut value_nodes = Vec::new();
+        for node in nodes {
+            let (Type::Map(_, key_type, value_type), AsonValue::Map(entries)) =
+                (&node.ty, &node.value)
+            else {
+                unreachable!()
+            };
+            key_nodes.extend(entries.iter().map(|(key, _)| Node {
+                value: key.clone(),
+                ty: (**key_type).clone(),
+            }));
+            value_nodes.extend(entries.iter().map(|(_, value)| Node {
+                value: value.clone(),
+                ty: (**value_type).clone(),
+            }));
+        }
+        let first = &nodes[0].ty;
+        let Type::Map(is_long, key_type, value_type) = first else {
+            unreachable!()
+        };
+        let key_type = if key_nodes.is_empty() {
+            (**key_type).clone()
+        } else {
+            unify_type(&key_nodes)?
+        };
+        let value_type = if value_nodes.is_empty() {
+            (**value_type).clone()
+        } else {
+            unify_type(&value_nodes)?
+        };
+        return Ok(Type::Map(
+            *is_long,
+            Box::new(key_type),
+            Box::new(value_type),
+        ));
+    }
+
+    if nodes
+        .iter()
+        .any(|node| option_inner_type(&node.ty).is_some())
+    {
+        let inner_nodes = nodes
+            .iter()
+            .filter_map(|node| match &node.value {
+                AsonValue::Option(Some(value)) => Some(Node {
+                    value: (**value).clone(),
+                    ty: option_inner_type(&node.ty).unwrap(),
+                }),
+                AsonValue::Option(None) => None,
+                value => Some(Node {
+                    value: value.clone(),
+                    ty: node.ty.clone(),
+                }),
+            })
+            .collect::<Vec<_>>();
+        return Ok(option_type(unify_type(&inner_nodes)?));
+    }
+
+    Err(ConversionError(
+        "JSON collection values do not have a common ASON type.".into(),
+    ))
+}
+
+fn numeric_type(ty: &Type) -> bool {
+    matches!(ty, Type::I32 | Type::I64 | Type::U64 | Type::F64)
+}
+
+fn unify_numeric_type(nodes: &[Node]) -> Result<Type> {
+    let has_float = nodes.iter().any(|node| node.ty == Type::F64);
+    if has_float {
+        return Ok(Type::F64);
+    }
+    let has_u64 = nodes.iter().any(|node| node.ty == Type::U64);
+    let has_i64 = nodes.iter().any(|node| node.ty == Type::I64);
+    if has_u64 {
+        if nodes
+            .iter()
+            .any(|node| numeric_as_f64(&node.value).is_some_and(|v| v < 0.0))
+        {
+            return Err(ConversionError(
+                "Cannot promote negative signed integers to u64.".into(),
+            ));
+        }
+        return Ok(Type::U64);
+    }
+    Ok(if has_i64 { Type::I64 } else { Type::I32 })
+}
+
+fn numeric_as_f64(value: &AsonValue) -> Option<f64> {
+    match value {
+        AsonValue::I32(value) => Some(*value as f64),
+        AsonValue::I64(value) => Some(*value as f64),
+        AsonValue::U64(value) => Some(*value as f64),
+        AsonValue::F64(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn coerce_value(value: AsonValue, ty: &Type) -> Result<AsonValue> {
+    Ok(match (value, ty) {
+        (AsonValue::I32(value), Type::I64) => AsonValue::I64(value as i64),
+        (AsonValue::I32(value), Type::U64) => AsonValue::U64(value as u64),
+        (AsonValue::I64(value), Type::U64) => {
+            AsonValue::U64(u64::try_from(value).map_err(|_| {
+                ConversionError("Cannot promote negative signed integers to u64.".into())
+            })?)
+        }
+        (AsonValue::I32(value), Type::F64) => AsonValue::F64(value as f64),
+        (AsonValue::I64(value), Type::F64) => AsonValue::F64(value as f64),
+        (AsonValue::U64(value), Type::F64) => AsonValue::F64(value as f64),
+        (AsonValue::List(values), Type::List(_, item_type)) => AsonValue::List(
+            values
+                .into_iter()
+                .map(|value| coerce_value(value, item_type))
+                .collect::<Result<_>>()?,
+        ),
+        (AsonValue::Map(entries), Type::Map(_, key_type, value_type)) => AsonValue::Map(
+            entries
+                .into_iter()
+                .map(|(key, value)| {
+                    Ok((
+                        coerce_value(key, key_type)?,
+                        coerce_value(value, value_type)?,
+                    ))
+                })
+                .collect::<Result<_>>()?,
+        ),
+        (AsonValue::Option(None), Type::Enum(_, _)) => AsonValue::Option(None),
+        (AsonValue::Option(Some(value)), Type::Enum(name, variants)) if name == "Option" => {
+            let item_type = variants
+                .iter()
+                .find_map(|variant| match variant {
+                    Variant::Newtype(name, ty) if name == "Some" => Some(ty),
+                    _ => None,
+                })
+                .ok_or_else(|| ConversionError("Invalid Option schema.".into()))?;
+            AsonValue::Option(Some(Box::new(coerce_value(*value, item_type)?)))
+        }
+        (value, Type::Enum(name, variants)) if name == "Option" => {
+            let item_type = variants
+                .iter()
+                .find_map(|variant| match variant {
+                    Variant::Newtype(name, ty) if name == "Some" => Some(ty),
+                    _ => None,
+                })
+                .ok_or_else(|| ConversionError("Invalid Option schema.".into()))?;
+            AsonValue::Option(Some(Box::new(coerce_value(value, item_type)?)))
+        }
+        (value, ty) if value_matches_type(&value, ty) => value,
+        _ => {
+            return Err(ConversionError(format!(
+                "Cannot promote JSON value to ASON type {ty:?}."
+            )));
+        }
+    })
+}
+
+fn value_matches_type(value: &AsonValue, ty: &Type) -> bool {
+    matches!(
+        (value, ty),
+        (AsonValue::I32(_), Type::I32)
+            | (AsonValue::I64(_), Type::I64)
+            | (AsonValue::U64(_), Type::U64)
+            | (AsonValue::F64(_), Type::F64)
+            | (AsonValue::Bool(_), Type::Bool)
+            | (AsonValue::String(_), Type::String(_))
+            | (AsonValue::List(_), Type::List(..))
+            | (AsonValue::Object(_), Type::Object(..))
+            | (AsonValue::Map(_), Type::Map(..))
+            | (AsonValue::Option(_), Type::Enum(..))
+    )
+}
+
+fn encode_node(value: &AsonValue, ty: &Type) -> Result<AsonbValue<'static>> {
+    Ok(match (value, ty) {
+        (AsonValue::I32(value), Type::I32) => AsonbValue::I32(*value),
+        (AsonValue::I64(value), Type::I64) => AsonbValue::I64(*value),
+        (AsonValue::U64(value), Type::U64) => AsonbValue::U64(*value),
+        (AsonValue::F64(value), Type::F64) => AsonbValue::F64(*value),
+        (AsonValue::Bool(value), Type::Bool) => AsonbValue::Bool(*value),
+        (AsonValue::String(value), Type::String(_)) => {
+            AsonbValue::String(Cow::Owned(value.clone()))
+        }
+        (AsonValue::List(values), Type::List(_, item_type)) => AsonbValue::List(
+            values
+                .iter()
+                .map(|value| encode_node(value, item_type))
+                .collect::<Result<_>>()?,
+        ),
+        (AsonValue::Object(values), Type::Object(_, fields)) if values.len() == fields.len() => {
+            AsonbValue::Object(
+                values
+                    .iter()
+                    .zip(fields)
+                    .map(|((_, value), field)| encode_node(value, &field.ty))
+                    .collect::<Result<_>>()?,
+            )
+        }
+        (AsonValue::Map(entries), Type::Map(_, key_type, value_type)) => AsonbValue::Map(
+            entries
+                .iter()
+                .map(|(key, value)| {
+                    Ok((encode_node(key, key_type)?, encode_node(value, value_type)?))
+                })
+                .collect::<Result<_>>()?,
+        ),
+        (AsonValue::Option(None), Type::Enum(name, variants)) if name == "Option" => {
+            let index = variants
+                .iter()
+                .position(|variant| matches!(variant, Variant::Unit(name) if name == "None"))
+                .ok_or_else(|| ConversionError("Invalid Option schema.".into()))?;
+            AsonbValue::Enum(index as u32, Box::new(AsonbValue::Tuple(Vec::new())))
+        }
+        (AsonValue::Option(Some(value)), Type::Enum(name, variants)) if name == "Option" => {
+            let (index, item_type) = variants
+                .iter()
+                .enumerate()
+                .find_map(|(index, variant)| match variant {
+                    Variant::Newtype(name, ty) if name == "Some" => Some((index, ty)),
+                    _ => None,
+                })
+                .ok_or_else(|| ConversionError("Invalid Option schema.".into()))?;
+            AsonbValue::Enum(index as u32, Box::new(encode_node(value, item_type)?))
+        }
+        _ => {
+            return Err(ConversionError(format!(
+                "JSON value does not match inferred ASONB type {ty:?}."
+            )));
+        }
+    })
+}
+
+fn is_valid_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    let valid_start = |character: char| {
+        character.is_ascii_alphabetic()
+            || character == '_'
+            || ('\u{a0}'..='\u{d7ff}').contains(&character)
+            || ('\u{e000}'..='\u{10ffff}').contains(&character)
+    };
+    valid_start(first)
+        && chars.all(|character| valid_start(character) || character.is_ascii_digit())
+        && !matches!(
+            value,
+            "true" | "false" | "NaN" | "NaN_f32" | "NaN_f64" | "Inf" | "Inf_f32" | "Inf_f64"
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ason_to_json_mappings_and_non_finite_rejection() {
+        let output = ason_to_json(r#"["first": 1 "second": 2]"#).unwrap();
+        let value: JsonValue = serde_json::from_str(&output).unwrap();
+        assert_eq!(value[0]["key"], "first");
+        assert_eq!(value[1]["key"], "second");
+
+        let output = ason_to_json("Action::Take(\"item\" 42)").unwrap();
+        let value: JsonValue = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["variant"], "Take");
+        assert_eq!(value["value"][0], "item");
+        assert_eq!(value["value"][1], 42);
+        assert_eq!(ason_to_json("Option::None").unwrap(), "null");
+        assert_eq!(ason_to_json("h\"00 ff\"").unwrap(), "\"AP8=\"");
+        assert_eq!(
+            ason_to_json("d\"2024-03-16T16:30:50+08:00\"").unwrap(),
+            "\"2024-03-16T16:30:50+08:00\""
+        );
+        assert!(ason_to_json("NaN").is_err());
+        assert!(ason_to_json("Inf").is_err());
+    }
+
+    #[test]
+    fn test_json_type_inference_and_nested_schemas() {
+        let output = json_to_ason("[1, 2147483648]").unwrap();
+        assert_eq!(
+            ason::de_value_from_str(&output).unwrap(),
+            AsonValue::List(vec![AsonValue::I64(1), AsonValue::I64(2_147_483_648)])
+        );
+        let output = json_to_ason("[null, 1, 2]").unwrap();
+        assert_eq!(
+            ason::de_value_from_str(&output).unwrap(),
+            AsonValue::List(vec![
+                AsonValue::Option(None),
+                AsonValue::Option(Some(Box::new(AsonValue::I32(1)))),
+                AsonValue::Option(Some(Box::new(AsonValue::I32(2)))),
+            ])
+        );
+        assert!(json_to_ason(r#"{"key": 1, "key": 2}"#).is_err());
+        assert!(json_to_ason("[1, \"two\"]").is_err());
+        assert!(json_to_ason("[-1, 18446744073709551615]").is_err());
+
+        let bytes = json_to_asonb(r#"[{"id": 1}, {"id": 2, "name": "Ada"}]"#).unwrap();
+        let (schema, _) = asonb::de_value_from_slice(&bytes).unwrap();
+        let Type::List(_, item) = schema.root else {
+            panic!("expected root List schema");
+        };
+        let Type::Object(_, fields) = *item else {
+            panic!("expected Object elements");
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["id", "name"]
+        );
+        assert!(
+            fields
+                .iter()
+                .all(|field| matches!(&field.ty, Type::Enum(name, _) if name == "Option"))
+        );
+
+        let bytes = json_to_asonb(r#"[{"nested": {}}, {"nested": {"x": 1}}]"#).unwrap();
+        let (schema, _) = asonb::de_value_from_slice(&bytes).unwrap();
+        let Type::List(_, row_type) = schema.root else {
+            panic!("expected root List schema");
+        };
+        let Type::Object(_, row_fields) = row_type.as_ref() else {
+            panic!("expected row Object schema");
+        };
+        let Type::Enum(_, variants) = &row_fields[0].ty else {
+            panic!("expected nested Option schema");
+        };
+        let Variant::Newtype(_, nested_type) = &variants[1] else {
+            panic!("expected Option::Some schema");
+        };
+        assert!(matches!(nested_type, Type::Object(_, fields) if fields[0].name == "x"));
+
+        let bytes = json_to_asonb(r#"[{"id": 1}, null]"#).unwrap();
+        let (schema, value) = asonb::de_value_from_slice(&bytes).unwrap();
+        let Type::List(_, item_type) = schema.root else {
+            panic!("expected root List schema");
+        };
+        assert!(matches!(item_type.as_ref(), Type::Enum(name, _) if name == "Option"));
+        assert!(
+            matches!(value, AsonbValue::List(items) if matches!(items[1], AsonbValue::Enum(0, _)))
+        );
+
+        let bytes = json_to_asonb(r#"[{"bad-key": 1}, {"other-key": 2147483648}]"#).unwrap();
+        let (schema, _) = asonb::de_value_from_slice(&bytes).unwrap();
+        let Type::List(_, map_type) = schema.root else {
+            panic!("expected root List schema");
+        };
+        assert!(matches!(map_type.as_ref(), Type::Map(_, _, value) if **value == Type::I64));
+
+        let bytes = json_to_asonb(r#"{"😀": 1}"#).unwrap();
+        let (schema, _) = asonb::de_value_from_slice(&bytes).unwrap();
+        assert!(matches!(schema.root, Type::Object(_, _)));
+
+        let bytes = json_to_asonb(r#"{"NaN": 1}"#).unwrap();
+        let (schema, _) = asonb::de_value_from_slice(&bytes).unwrap();
+        assert!(matches!(schema.root, Type::Map(_, _, _)));
+    }
+
+    #[test]
+    fn test_asonb_multichunk_list_streams_to_json() {
+        let schema = DocumentSchema::new(Type::List(Encoding::MultiChunk, Box::new(Type::I32)));
+        let value = AsonbValue::List(vec![
+            AsonbValue::I32(1),
+            AsonbValue::I32(2),
+            AsonbValue::I32(3),
+        ]);
+        let mut bytes = Vec::new();
+        asonb::ser_value_to_writer(&schema, &value, &mut bytes).unwrap();
+        let mut json = Vec::new();
+        asonb_reader_to_json(bytes.as_slice(), &mut json).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<JsonValue>(&json).unwrap(),
+            serde_json::json!([1, 2, 3])
+        );
+    }
+}

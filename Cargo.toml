@@ -3,4 +3,27 @@ name = "ason-converter"
 version = "0.1.0"
 edition = "2024"
 
+license-file = "LICENSE.additional"
+description = "A converter between ASON, ASONB, JSON, and JSONC formats."
+homepage = "https://github.com/hemashushu/ason-converter"
+repository = "https://github.com/hemashushu/ason-converter"
+keywords = ["ason", "asonb", "json", "jsonc", "converter"]
+categories = ["encoding", "parsing"]
+
 [dependencies]
+ason = { path = "/Users/yang/projects/ason" }
+asonb = { path = "/Users/yang/projects/asonb/crates/asonb" }
+base64 = "0.23"
+chrono = "0.4"
+clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
+serde = "1.0"
+serde_json = { version = "1.0", features = ["preserve_order"] }
+
+[[bin]]
+name = "ason2b"
+path = "bin/ason2b.rs"
+
+[[bin]]
+name = "ason2j"
+path = "bin/ason2j.rs"
