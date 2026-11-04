@@ -338,14 +338,17 @@ SYNOPSIS
     ason2b [options] [INPUT] [-o OUTPUT]
 
 DESCRIPTION
-    The conversion direction is determined automatically from the input and output file names, or from the header of the input data if no file name is provided. Use the `-b` flag to force conversion from ASON to ASONB.
+    The conversion direction is determined automatically from the input and output file names, or from the header of the input data if no file name is provided. In other words, by default the command automatically converts between ASON and ASONB in either direction.
+
+    Use `-t` to indicate conversion from ASONB to ASON, or `-b` to indicate conversion from ASON to ASONB.
 
     If no input file is specified, input is read from standard input.
 
     If no output file is specified, output is written to standard output.
 
 OPTIONS
-    -b                  Force conversion from ASON to ASONB
+    -t, --text          Indicate conversion from ASONB to ASON
+    -b, --binary        Indicate conversion from ASON to ASONB (Default)
     -o OUTPUT           Specify the output file
     --complete SHELL    Generate a shell completion script for the specified shell
                         Supported shells: bash, zsh, fish, powershell
@@ -358,8 +361,9 @@ EXIT STATUS
     0   Successful conversion
     1   An error occurred during conversion
     2   No conversion was performed
-    3   Input is ASONB while the `-b` flag is specified
-    4   Writing ASONB to a terminal is an error
+    3   Input is ASONB while the `-b` / `--binary` flag is specified
+    4   Input is ASON while the `-t` / `--text` flag is specified
+    5   Writing ASONB to a terminal is an error
 
 EXAMPLES
     * Convert ASON file to ASONB file
@@ -370,6 +374,9 @@ EXAMPLES
 
     * Convert ASON from stdin to ASONB file
         echo '{key: "value"}' | ason2b -o output.asonb
+
+    * Convert ASON from stdin to ASONB and then back to ASON
+        echo '{key: "value"}' | ason2b | ason2b
 ```
 
 ### `ason2j`
@@ -384,15 +391,16 @@ SYNOPSIS
 DESCRIPTION
     The conversion direction and encoding are determined automatically from the input and output file names. "*.json" and "*.jsonc" indicate JSON, "*.ason" indicates ASON, and "*.asonb" indicates ASONB.
 
-    If no file name is provided, ASON/ASONB is converted to JSON by default. Use the `-r` flag to convert JSON to ASON/ASONB instead, and the `-b` flag to indicate conversion to ASONB.
+    If no file name is provided, ASON/ASONB is converted to JSON by default. Use `-r` / `--reverse` to convert JSON to ASON/ASONB. When converting JSON, output is ASON by default; use `-t` / `--text` for ASON or `-b` / `--binary` for ASONB.
 
     If no input file is specified, input is read from standard input.
 
     If no output file is specified, output is written to standard output.
 
 OPTIONS
-    -r                  Convert JSON to ASON/ASONB
-    -b                  Indicate to convert to ASONB
+    -r, --reverse       Convert JSON to ASON/ASONB
+    -t, --text          Indicate to convert to ASON (Default)
+    -b, --binary        Indicate to convert to ASONB
     -o OUTPUT           Specify the output file
     --complete SHELL    Generate a shell completion script for the specified shell
                         Supported shells: bash, zsh, fish, powershell
@@ -405,7 +413,8 @@ EXIT STATUS
     1   An error occurred during conversion
     2   No conversion was performed
     3   Output file name is "*.ason" while the `-b` flag is specified
-    4   Writing ASONB to a terminal is an error
+    4   Output file name is "*.asonb" while the `-t` flag is specified
+    5   Writing ASONB to a terminal is an error
 
 EXAMPLES
     * Convert ASON/ASONB file to JSON file

@@ -60,7 +60,20 @@ struct Ason2bArgs {
     #[arg(value_name = "INPUT")]
     input: Option<PathBuf>,
 
-    #[arg(short = 'b', help = "Force conversion from ASON to ASONB")]
+    #[arg(
+        short = 't',
+        long = "text",
+        conflicts_with = "force_binary",
+        help = "Force conversion from ASONB to ASON"
+    )]
+    force_text: bool,
+
+    #[arg(
+        short = 'b',
+        long = "binary",
+        conflicts_with = "force_text",
+        help = "Force conversion from ASON to ASONB"
+    )]
     force_binary: bool,
 
     #[arg(short = 'o', value_name = "OUTPUT")]
@@ -80,10 +93,23 @@ struct Ason2jArgs {
     #[arg(value_name = "INPUT")]
     input: Option<PathBuf>,
 
-    #[arg(short = 'r', help = "Convert JSON to ASON/ASONB")]
+    #[arg(short = 'r', long = "reverse", help = "Convert JSON to ASON/ASONB")]
     reverse: bool,
 
-    #[arg(short = 'b', help = "Indicate conversion to ASONB")]
+    #[arg(
+        short = 't',
+        long = "text",
+        conflicts_with = "binary",
+        help = "Indicate conversion to ASON (default)"
+    )]
+    text: bool,
+
+    #[arg(
+        short = 'b',
+        long = "binary",
+        conflicts_with = "text",
+        help = "Indicate conversion to ASONB"
+    )]
     binary: bool,
 
     #[arg(short = 'o', value_name = "OUTPUT")]
@@ -168,12 +194,29 @@ fn run_ason2b_command(args: Ason2bArgs) -> CliResult<()> {
     if source == Format::Json {
         return Err(CliError::new(1, "ason2b does not accept JSON input."));
     }
+    if args.force_text && source == Format::Ason {
+        return Err(CliError::new(
+            4,
+            "Input is ASON while -t/--text was specified.",
+        ));
+    }
     if args.force_binary && source == Format::Asonb {
-        return Err(CliError::new(3, "Input is ASONB while -b was specified."));
+        return Err(CliError::new(
+            3,
+            "Input is ASONB while -b/--binary was specified.",
+        ));
     }
 
     let output_extension = args.output.as_deref().and_then(ason2b_extension_format);
-    let destination = if args.force_binary {
+    if args.force_text && output_extension == Some(Format::Asonb) {
+        return Err(CliError::new(1, "-t conflicts with an .asonb output path."));
+    }
+    if args.force_binary && output_extension == Some(Format::Ason) {
+        return Err(CliError::new(1, "-b conflicts with an .ason output path."));
+    }
+    let destination = if args.force_text {
+        Format::Ason
+    } else if args.force_binary {
         Format::Asonb
     } else if let Some(format) = output_extension {
         format
@@ -185,18 +228,12 @@ fn run_ason2b_command(args: Ason2bArgs) -> CliResult<()> {
     if destination == Format::Json {
         return Err(CliError::new(1, "ason2b output must use .ason or .asonb."));
     }
-    if args.force_binary && output_extension == Some(Format::Ason) {
-        return Err(CliError::new(1, "-b conflicts with an .ason output path."));
-    }
     if source == destination {
         return Err(CliError::new(2, "No conversion was performed."));
     }
     let (mut output, output_is_terminal) = output_writer(args.output.as_deref())?;
-    if destination == Format::Asonb && output_is_terminal {
-        return Err(CliError::new(
-            4,
-            "Writing ASONB to a terminal is not allowed.",
-        ));
+    if let Some(error) = binary_terminal_write_error(destination, output_is_terminal) {
+        return Err(error);
     }
     match (source, destination) {
         (Format::Ason, Format::Asonb) => {
@@ -231,10 +268,22 @@ fn run_ason2j_command(args: Ason2jArgs) -> CliResult<()> {
     }
 
     let output_extension = args.output.as_deref().and_then(ason2j_extension_format);
+    if args.text && output_extension == Some(Format::Asonb) {
+        return Err(CliError::new(
+            4,
+            "The output file name is .asonb while -t/--text was specified.",
+        ));
+    }
     if args.binary && output_extension == Some(Format::Ason) {
         return Err(CliError::new(
             3,
-            "The output file name is .ason while -b was specified.",
+            "The output file name is .ason while -b/--binary was specified.",
+        ));
+    }
+    if args.text && output_extension.is_some_and(|format| format != Format::Ason) {
+        return Err(CliError::new(
+            1,
+            "-t/--text conflicts with the selected output extension.",
         ));
     }
     if args.binary && output_extension.is_some_and(|format| format != Format::Asonb) {
@@ -245,6 +294,8 @@ fn run_ason2j_command(args: Ason2jArgs) -> CliResult<()> {
     }
     let destination = if args.binary {
         Format::Asonb
+    } else if args.text {
+        Format::Ason
     } else if let Some(format) = output_extension {
         format
     } else if args.reverse {
@@ -262,11 +313,8 @@ fn run_ason2j_command(args: Ason2jArgs) -> CliResult<()> {
         return Err(CliError::new(2, "No conversion was performed."));
     }
     let (mut output, output_is_terminal) = output_writer(args.output.as_deref())?;
-    if destination == Format::Asonb && output_is_terminal {
-        return Err(CliError::new(
-            4,
-            "Writing ASONB to a terminal is not allowed.",
-        ));
+    if let Some(error) = binary_terminal_write_error(destination, output_is_terminal) {
+        return Err(error);
     }
     match (source, destination) {
         (Format::Ason, Format::Json) => {
@@ -311,6 +359,11 @@ fn run_ason2j_command(args: Ason2jArgs) -> CliResult<()> {
     }
     output.flush()?;
     Ok(())
+}
+
+fn binary_terminal_write_error(destination: Format, output_is_terminal: bool) -> Option<CliError> {
+    (destination == Format::Asonb && output_is_terminal)
+        .then(|| CliError::new(5, "Writing ASONB to a terminal is not allowed."))
 }
 
 fn open_input(path: Option<&Path>) -> CliResult<InputSource> {
@@ -385,4 +438,53 @@ fn report_error(error: CliError) -> ExitCode {
         eprintln!("{}", error.message);
     }
     ExitCode::from(error.code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Ason2bArgs, Ason2jArgs, Format, binary_terminal_write_error};
+    use clap::Parser;
+
+    #[test]
+    fn ason2b_text_and_binary_flags_are_mutually_exclusive() {
+        let text_short = Ason2bArgs::try_parse_from(["ason2b", "-t"]).unwrap();
+        assert!(text_short.force_text);
+
+        let text = Ason2bArgs::try_parse_from(["ason2b", "--text"]).unwrap();
+        assert!(text.force_text);
+        assert!(!text.force_binary);
+
+        let binary = Ason2bArgs::try_parse_from(["ason2b", "--binary"]).unwrap();
+        assert!(!binary.force_text);
+        assert!(binary.force_binary);
+
+        let binary_short = Ason2bArgs::try_parse_from(["ason2b", "-b"]).unwrap();
+        assert!(binary_short.force_binary);
+
+        assert!(Ason2bArgs::try_parse_from(["ason2b", "-t", "-b"]).is_err());
+    }
+
+    #[test]
+    fn ason2j_reverse_text_and_binary_flags_are_parsed_and_exclusive() {
+        assert!(
+            Ason2jArgs::try_parse_from(["ason2j", "--reverse"])
+                .unwrap()
+                .reverse
+        );
+        assert!(Ason2jArgs::try_parse_from(["ason2j", "-t"]).unwrap().text);
+        assert!(
+            Ason2jArgs::try_parse_from(["ason2j", "--binary"])
+                .unwrap()
+                .binary
+        );
+        assert!(Ason2jArgs::try_parse_from(["ason2j", "-t", "-b"]).is_err());
+    }
+
+    #[test]
+    fn terminal_binary_output_uses_exit_code_five() {
+        let error = binary_terminal_write_error(Format::Asonb, true).unwrap();
+        assert_eq!(error.code, 5);
+        assert!(binary_terminal_write_error(Format::Ason, true).is_none());
+        assert!(binary_terminal_write_error(Format::Asonb, false).is_none());
+    }
 }

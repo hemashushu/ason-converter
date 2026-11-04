@@ -56,7 +56,26 @@ fn stdin_conversion_help_version_and_completion() {
     assert!(text.contains("name: \"Ada\""));
 
     assert_eq!(invoke("ason2j", &["--help"], b"").status.code(), Some(0));
+    let help = invoke("ason2b", &["--help"], b"");
+    assert_eq!(help.status.code(), Some(0));
+    let help_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&help.stdout),
+        String::from_utf8_lossy(&help.stderr)
+    );
+    assert!(help_text.contains("-t, --text"));
+    assert!(help_text.contains("-b, --binary"));
     assert_eq!(invoke("ason2b", &["--version"], b"").status.code(), Some(0));
+    let json_help = invoke("ason2j", &["--help"], b"");
+    assert_eq!(json_help.status.code(), Some(0));
+    let json_help_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&json_help.stdout),
+        String::from_utf8_lossy(&json_help.stderr)
+    );
+    assert!(json_help_text.contains("-r, --reverse"));
+    assert!(json_help_text.contains("-t, --text"));
+    assert!(json_help_text.contains("-b, --binary"));
     let completion = invoke("ason2b", &["--complete", "zsh"], b"");
     assert_eq!(completion.status.code(), Some(2));
     assert!(!completion.stdout.is_empty());
@@ -77,9 +96,11 @@ fn stdin_conversion_help_version_and_completion() {
 fn extension_detection_binary_round_trip_and_exit_statuses() {
     let directory = TempDirectory::new();
     let input_ason = directory.0.join("input.ason");
+    let input_json = directory.0.join("input.json");
     let output_asonb = directory.0.join("output.asonb");
     let output_ason = directory.0.join("output.ason");
     fs::write(&input_ason, "{name: \"Ada\"}").unwrap();
+    fs::write(&input_json, r#"{"name":"Ada"}"#).unwrap();
 
     let output = invoke(
         "ason2b",
@@ -93,9 +114,39 @@ fn extension_detection_binary_round_trip_and_exit_statuses() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(&fs::read(&output_asonb).unwrap()[..8], b"\0ASONB\0\x01");
 
+    let forced_asonb = directory.0.join("forced.asonb");
     let output = invoke(
         "ason2b",
         &[
+            "--binary",
+            input_ason.to_str().unwrap(),
+            "-o",
+            forced_asonb.to_str().unwrap(),
+        ],
+        b"",
+    );
+    assert_eq!(output.status.code(), Some(0));
+
+    let output = invoke(
+        "ason2b",
+        &[
+            output_asonb.to_str().unwrap(),
+            "-o",
+            output_ason.to_str().unwrap(),
+        ],
+        b"",
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        fs::read_to_string(&output_ason)
+            .unwrap()
+            .contains("name: \"Ada\"")
+    );
+
+    let output = invoke(
+        "ason2b",
+        &[
+            "--text",
             output_asonb.to_str().unwrap(),
             "-o",
             output_ason.to_str().unwrap(),
@@ -116,6 +167,12 @@ fn extension_detection_binary_round_trip_and_exit_statuses() {
         Some(3)
     );
     assert_eq!(
+        invoke("ason2b", &["--text", input_ason.to_str().unwrap()], b"")
+            .status
+            .code(),
+        Some(4)
+    );
+    assert_eq!(
         invoke(
             "ason2j",
             &[
@@ -129,6 +186,42 @@ fn extension_detection_binary_round_trip_and_exit_statuses() {
         .status
         .code(),
         Some(3)
+    );
+    assert_eq!(
+        invoke(
+            "ason2j",
+            &[
+                input_json.to_str().unwrap(),
+                "-t",
+                "-o",
+                output_asonb.to_str().unwrap(),
+            ],
+            b"",
+        )
+        .status
+        .code(),
+        Some(4)
+    );
+    assert_eq!(
+        invoke(
+            "ason2b",
+            &[
+                "-t",
+                output_asonb.to_str().unwrap(),
+                "-o",
+                output_asonb.to_str().unwrap(),
+            ],
+            b"",
+        )
+        .status
+        .code(),
+        Some(1)
+    );
+    assert_eq!(
+        invoke("ason2b", &["-t", "-b", input_ason.to_str().unwrap()], b"")
+            .status
+            .code(),
+        Some(1)
     );
     assert_eq!(
         invoke(
