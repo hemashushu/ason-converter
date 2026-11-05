@@ -570,43 +570,58 @@ fn unify_type(nodes: &[Node]) -> Result<Type> {
         return Ok(Type::List(Encoding::Regular, Box::new(item_type)));
     }
 
-    if nodes.iter().all(|node| matches!(node.ty, Type::Map(..))) {
+    let has_map = nodes.iter().any(|node| matches!(node.ty, Type::Map(..)));
+    if has_map
+        && nodes
+            .iter()
+            .all(|node| matches!(node.ty, Type::Map(..) | Type::Object(..)))
+    {
         let mut key_nodes = Vec::new();
         let mut value_nodes = Vec::new();
         for node in nodes {
-            let (Type::Map(_, key_type, value_type), AsonValue::Map(entries)) =
-                (&node.ty, &node.value)
-            else {
-                unreachable!()
-            };
-            key_nodes.extend(entries.iter().map(|(key, _)| Node {
-                value: key.clone(),
-                ty: (**key_type).clone(),
-            }));
-            value_nodes.extend(entries.iter().map(|(_, value)| Node {
-                value: value.clone(),
-                ty: (**value_type).clone(),
-            }));
+            match (&node.ty, &node.value) {
+                (Type::Map(_, key_type, value_type), AsonValue::Map(entries)) => {
+                    key_nodes.extend(entries.iter().map(|(key, _)| Node {
+                        value: key.clone(),
+                        ty: (**key_type).clone(),
+                    }));
+                    value_nodes.extend(entries.iter().map(|(_, value)| Node {
+                        value: value.clone(),
+                        ty: (**value_type).clone(),
+                    }));
+                }
+                (Type::Object(_, fields), AsonValue::Object(values))
+                    if fields.len() == values.len() =>
+                {
+                    for (field, (name, value)) in fields.iter().zip(values) {
+                        key_nodes.push(Node {
+                            value: AsonValue::String(name.clone()),
+                            ty: Type::String(Encoding::Regular),
+                        });
+                        value_nodes.push(Node {
+                            value: value.clone(),
+                            ty: field.ty.clone(),
+                        });
+                    }
+                }
+                _ => {
+                    return Err(ConversionError(
+                        "Object or Map value does not match its inferred schema.".into(),
+                    ));
+                }
+            }
         }
-        let first = &nodes[0].ty;
-        let Type::Map(is_long, key_type, value_type) = first else {
-            unreachable!()
-        };
         let key_type = if key_nodes.is_empty() {
-            (**key_type).clone()
+            Type::String(Encoding::Regular)
         } else {
             unify_type(&key_nodes)?
         };
         let value_type = if value_nodes.is_empty() {
-            (**value_type).clone()
+            Type::I32
         } else {
             unify_type(&value_nodes)?
         };
-        return Ok(Type::Map(
-            *is_long,
-            Box::new(key_type),
-            Box::new(value_type),
-        ));
+        return Ok(Type::Map(false, Box::new(key_type), Box::new(value_type)));
     }
 
     if nodes
@@ -694,6 +709,17 @@ fn coerce_value(value: AsonValue, ty: &Type) -> Result<AsonValue> {
                 .map(|(key, value)| {
                     Ok((
                         coerce_value(key, key_type)?,
+                        coerce_value(value, value_type)?,
+                    ))
+                })
+                .collect::<Result<_>>()?,
+        ),
+        (AsonValue::Object(fields), Type::Map(_, key_type, value_type)) => AsonValue::Map(
+            fields
+                .into_iter()
+                .map(|(name, value)| {
+                    Ok((
+                        coerce_value(AsonValue::String(name), key_type)?,
                         coerce_value(value, value_type)?,
                     ))
                 })
@@ -922,6 +948,30 @@ mod tests {
             panic!("expected root List schema");
         };
         assert!(matches!(map_type.as_ref(), Type::Map(_, _, value) if **value == Type::I64));
+
+        let bytes = json_to_asonb(r#"[{"id": 1}, {"bad-key": 2147483648}]"#).unwrap();
+        let (schema, value) = asonb::de_value_from_slice(&bytes).unwrap();
+        let Type::List(_, map_type) = schema.root else {
+            panic!("expected root List schema");
+        };
+        assert!(
+            matches!(map_type.as_ref(), Type::Map(_, key, value) if **key == Type::String(Encoding::Regular) && **value == Type::I64)
+        );
+        assert_eq!(
+            value,
+            AsonbValue::List(vec![
+                AsonbValue::Map(vec![(
+                    AsonbValue::String(Cow::Borrowed("id")),
+                    AsonbValue::I64(1),
+                )]),
+                AsonbValue::Map(vec![(
+                    AsonbValue::String(Cow::Borrowed("bad-key")),
+                    AsonbValue::I64(2_147_483_648),
+                )]),
+            ])
+        );
+
+        assert!(json_to_asonb(r#"[{"id": "one"}, {"bad-key": 2}]"#).is_err());
 
         let bytes = json_to_asonb(r#"{"😀": 1}"#).unwrap();
         let (schema, _) = asonb::de_value_from_slice(&bytes).unwrap();

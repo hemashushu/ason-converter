@@ -21,6 +21,7 @@ ASON Converter is a Rust library and a set of command-line tools for converting 
     - [3.3.3 Objects](#333-objects)
     - [3.3.4 Handling `null` Values](#334-handling-null-values)
     - [3.3.5 Numeric Type Promotion](#335-numeric-type-promotion)
+    - [3.3.6 Promoting Objects to Maps](#336-promoting-objects-to-maps)
 - [4 Command-Line Tools](#4-command-line-tools)
   - [4.1 Installation](#41-installation)
   - [4.2 Commands](#42-commands)
@@ -275,7 +276,7 @@ becomes a List of Lists of String; the empty inner array is inferred as a List o
 
 #### 3.3.3 Objects
 
-An object becomes an ASON/ASONB Object if all its keys are valid identifiers.
+When converted on its own, an object becomes an ASON/ASONB Object if all its keys are valid identifiers.
 
 For example:
 
@@ -285,7 +286,7 @@ For example:
 
 becomes an ASON/ASONB Object.
 
-If any key is not a valid identifier, the object can become a Map only if all its values have the same ASON type after numeric promotion.
+If any key is not a valid identifier, the object becomes a Map only if all its values have the same ASON type after numeric promotion. Objects in a collection may be promoted to Maps to match other elements; see [Promoting Objects to Maps](#336-promoting-objects-to-maps).
 
 For example, the following object can be converted to a Map:
 
@@ -317,6 +318,18 @@ When finding a common ASON type for numeric array elements, Map values, or value
 - Other mixtures that cannot be represented by one ASON type cause conversion to fail.
 
 Promotion to `f64` may lose integer precision for large values.
+
+#### 3.3.6 Promoting Objects to Maps
+
+When a collection needs a common ASON type and contains both Objects and Maps, an Object is promoted to a Map if the values can share one ASON type. Each Object field name becomes a String key, and all Object field values and Map values are unified using the numeric promotion rules above. If the values cannot be unified, conversion fails. This promotion occurs only when a Map is already present; Objects are not converted to Maps solely because they appear in a collection.
+
+For example, the first value below is initially an Object and the second is a Map because its key is not a valid identifier:
+
+```json
+[{"id": 1}, {"invalid-key": 2147483648}]
+```
+
+The Object is promoted to a Map, and `1` is promoted to `i64`. The result is a List of `Map<String, i64>` values.
 
 ## 4 Command-Line Tools
 
