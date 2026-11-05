@@ -65,6 +65,10 @@ fn stdin_conversion_help_version_and_completion() {
     );
     assert!(help_text.contains("-t, --text"));
     assert!(help_text.contains("-b, --binary"));
+    assert!(help_text.contains("Input file (defaults to standard input)"));
+    assert!(help_text.contains("Write output to this file (defaults to standard output)"));
+    assert!(help_text.contains("Print a completion script to standard output"));
+    assert!(help_text.contains("PowerShell"));
     assert_eq!(invoke("ason2b", &["--version"], b"").status.code(), Some(0));
     let json_help = invoke("ason2j", &["--help"], b"");
     assert_eq!(json_help.status.code(), Some(0));
@@ -76,6 +80,10 @@ fn stdin_conversion_help_version_and_completion() {
     assert!(json_help_text.contains("-r, --reverse"));
     assert!(json_help_text.contains("-t, --text"));
     assert!(json_help_text.contains("-b, --binary"));
+    assert!(json_help_text.contains("Input file (defaults to standard input)"));
+    assert!(json_help_text.contains("Write output to this file (defaults to standard output)"));
+    assert!(json_help_text.contains("Print a completion script to standard output"));
+    assert!(json_help_text.contains("PowerShell"));
     let completion = invoke("ason2b", &["--complete", "zsh"], b"");
     assert_eq!(completion.status.code(), Some(2));
     assert!(!completion.stdout.is_empty());

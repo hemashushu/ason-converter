@@ -364,11 +364,12 @@ DESCRIPTION
     If no output file is specified, output is written to standard output.
 
 OPTIONS
+    INPUT               Input file (defaults to standard input)
     -t, --text          Force conversion from ASONB to ASON
     -b, --binary        Force conversion from ASON to ASONB
-    -o OUTPUT           Specify the output file
-    --complete SHELL    Generate a shell completion script for the specified shell
-                        Supported shells: bash, zsh, fish, powershell
+    -o OUTPUT           Write output to this file (defaults to standard output)
+    --complete SHELL    Print a completion script to standard output
+                        Supported shells: bash, zsh, fish, PowerShell
     -h, --help          Show help information
     --version           Show version information
 
@@ -415,12 +416,13 @@ DESCRIPTION
     If no output file is specified, output is written to standard output.
 
 OPTIONS
-    -r, --reverse       Convert JSON to ASON/ASONB
-    -t, --text          Indicate to convert to ASON (Default)
-    -b, --binary        Indicate to convert to ASONB
-    -o OUTPUT           Specify the output file
-    --complete SHELL    Generate a shell completion script for the specified shell
-                        Supported shells: bash, zsh, fish, powershell
+    INPUT               Input file (defaults to standard input)
+    -r, --reverse       Treat input without a recognized extension as JSON
+    -t, --text          Select ASON output (the default for JSON input)
+    -b, --binary        Select ASONB output
+    -o OUTPUT           Write output to this file (defaults to standard output)
+    --complete SHELL    Print a completion script to standard output
+                        Supported shells: bash, zsh, fish, PowerShell
     -h, --help          Show help information
     --version           Show version information
 

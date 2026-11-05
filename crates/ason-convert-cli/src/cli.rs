@@ -57,7 +57,7 @@ type CliResult<T> = std::result::Result<T, CliError>;
 #[derive(Parser)]
 #[command(name = "ason2b", version, about = "Convert ASON to and from ASONB")]
 struct Ason2bArgs {
-    #[arg(value_name = "INPUT")]
+    #[arg(value_name = "INPUT", help = "Input file (defaults to standard input)")]
     input: Option<PathBuf>,
 
     #[arg(
@@ -76,10 +76,18 @@ struct Ason2bArgs {
     )]
     force_binary: bool,
 
-    #[arg(short = 'o', value_name = "OUTPUT")]
+    #[arg(
+        short = 'o',
+        value_name = "OUTPUT",
+        help = "Write output to this file (defaults to standard output)"
+    )]
     output: Option<PathBuf>,
 
-    #[arg(long = "complete", value_name = "SHELL")]
+    #[arg(
+        long = "complete",
+        value_name = "SHELL",
+        help = "Print a completion script to standard output (bash, zsh, fish, or PowerShell)"
+    )]
     complete: Option<String>,
 }
 
@@ -90,17 +98,21 @@ struct Ason2bArgs {
     about = "Convert ASON/ASONB to and from JSON"
 )]
 struct Ason2jArgs {
-    #[arg(value_name = "INPUT")]
+    #[arg(value_name = "INPUT", help = "Input file (defaults to standard input)")]
     input: Option<PathBuf>,
 
-    #[arg(short = 'r', long = "reverse", help = "Convert JSON to ASON/ASONB")]
+    #[arg(
+        short = 'r',
+        long = "reverse",
+        help = "Treat input without a recognized extension as JSON"
+    )]
     reverse: bool,
 
     #[arg(
         short = 't',
         long = "text",
         conflicts_with = "binary",
-        help = "Indicate conversion to ASON (default)"
+        help = "Select ASON output (the default for JSON input)"
     )]
     text: bool,
 
@@ -108,14 +120,22 @@ struct Ason2jArgs {
         short = 'b',
         long = "binary",
         conflicts_with = "text",
-        help = "Indicate conversion to ASONB"
+        help = "Select ASONB output"
     )]
     binary: bool,
 
-    #[arg(short = 'o', value_name = "OUTPUT")]
+    #[arg(
+        short = 'o',
+        value_name = "OUTPUT",
+        help = "Write output to this file (defaults to standard output)"
+    )]
     output: Option<PathBuf>,
 
-    #[arg(long = "complete", value_name = "SHELL")]
+    #[arg(
+        long = "complete",
+        value_name = "SHELL",
+        help = "Print a completion script to standard output (bash, zsh, fish, or PowerShell)"
+    )]
     complete: Option<String>,
 }
 
