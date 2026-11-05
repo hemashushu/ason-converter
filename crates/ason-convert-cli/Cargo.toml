@@ -1,10 +1,10 @@
 [package]
 name = "ason-convert-cli"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 license-file = "LICENSE.additional"
-description = "Command-line tools for converting ASON, ASONB, JSON, and JSONC."
+description = "Command-line tools for converting between ASON, ASONB, JSON, and JSONC."
 homepage = "https://github.com/hemashushu/ason-converter"
 repository = "https://github.com/hemashushu/ason-converter"
 readme = "../../README.md"

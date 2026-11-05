@@ -1,6 +1,6 @@
 # ASON Converter
 
-ASON Converter is a tool for converting between ASON, ASONB (the binary format of ASON), and JSON.
+ASON Converter is a Rust library and a set of command-line tools for converting between ASON, ASONB (ASON's binary format), JSON, and JSONC.
 
 <!-- @import "[TOC]" {cmd="toc" depthFrom=2 depthTo=4 orderedList=false} -->
 
@@ -10,51 +10,52 @@ ASON Converter is a tool for converting between ASON, ASONB (the binary format o
 - [2 Limitations](#2-limitations)
 - [3 Conversion Rules](#3-conversion-rules)
   - [3.1 Converting between ASON and ASONB](#31-converting-between-ason-and-asonb)
-  - [3.2 Converting ASON/ASONB to JSON](#32-converting-asonasonb-to-json)
-    - [3.2.1 Number](#321-number)
-    - [3.2.2 Map](#322-map)
-    - [3.2.3 Enumeration](#323-enumeration)
+  - [3.2 Converting from ASON/ASONB to JSON](#32-converting-from-asonasonb-to-json)
+    - [3.2.1 Numbers](#321-numbers)
+    - [3.2.2 Maps](#322-maps)
+    - [3.2.3 Enumerations](#323-enumerations)
     - [3.2.4 `Option`](#324-option)
   - [3.3 Converting from JSON to ASON/ASONB](#33-converting-from-json-to-asonasonb)
     - [3.3.1 Numbers](#331-numbers)
-    - [3.3.2 Array](#332-array)
-    - [3.3.3 Object](#333-object)
+    - [3.3.2 Arrays](#332-arrays)
+    - [3.3.3 Objects](#333-objects)
     - [3.3.4 Handling `null` Values](#334-handling-null-values)
     - [3.3.5 Numeric Type Promotion](#335-numeric-type-promotion)
-- [4. Installation](#4-installation)
-- [5. Usage](#5-usage)
-  - [`ason2b`](#ason2b)
-  - [`ason2j`](#ason2j)
-- [6. Using as a Library](#6-using-as-a-library)
-- [7. Links](#7-links)
-- [8. License](#8-license)
+- [4 Command-Line Tools](#4-command-line-tools)
+  - [4.1 Installation](#41-installation)
+  - [4.2 Commands](#42-commands)
+    - [4.2.1 `ason2b`](#421-ason2b)
+    - [4.2.2 `ason2j`](#422-ason2j)
+- [5 Library Usage](#5-library-usage)
+- [6 Links](#6-links)
+- [7 License](#7-license)
 
 <!-- /code_chunk_output -->
 
 ## 1 Features
 
 - Converts between ASON, ASONB, and JSON.
-- Supports reading [JSONC](https://jsonc.org/) (JSON with comments).
-- Supports streaming conversion from ASONB to ASON or JSON.
-- Produces well-formatted ASON and JSON output.
+- Reads [JSONC](https://jsonc.org/) (JSON with comments).
+- Streams ASONB-to-ASON or ASONB-to-JSON conversions when the input meets the requirements below.
+- Produces formatted ASON and JSON output.
 
 ## 2 Limitations
 
-- Streaming conversion from ASONB to ASON or JSON is available only when the root value is a multi-chunk List. Streaming conversion to ASONB is not supported because ASON and JSON do not provide all the schema and type information needed for ASONB; converting from either format to ASONB requires reading the entire input into memory first.
-- Comments in ASON and JSONC are discarded.
-- ASONB stores DateTime values as UTC timestamps. Converting an ASON DateTime to ASONB and back therefore loses its original time offset; converting an ASONB DateTime to JSON produces a UTC date-time string.
-- Converting between JSON and ASON/ASONB may lose type information or precision, so a round-trip conversion does not necessarily reproduce the original document.
-- JSON conversion does not preserve the distinction between a Map and a List, the Enumeration type name, or the `Option::Some` wrapper.
+- ASONB-to-ASON and ASONB-to-JSON conversions can stream only when the root value is a multi-chunk List. Conversion to ASONB cannot stream: ASON and JSON do not contain all the schema and type information ASONB requires, so the entire input must be read into memory first.
+- Comments in ASON and JSONC input are discarded.
+- ASONB stores DateTime values as UTC timestamps. Converting an ASON DateTime to ASONB and back loses the original UTC offset. Converting an ASONB DateTime to JSON produces a UTC date-time string.
+- Converting between JSON and ASON/ASONB may lose type information or numeric precision. A round trip may not reproduce the original document exactly.
+- JSON cannot preserve the distinction between Map and List, an Enumeration's type name, or the `Option::Some` wrapper.
 
 ## 3 Conversion Rules
 
 ### 3.1 Converting between ASON and ASONB
 
-Converting between ASON and ASONB is generally straightforward, as both formats share the same data types and constraints. See [Conversion to and from ASON](https://github.com/hemashushu/asonb#45-conversion-to-and-from-ason) for details.
+ASON and ASONB share the same data types and constraints, so conversion between them is generally straightforward. For details, see [Conversion to and from ASON](https://github.com/hemashushu/asonb#45-conversion-to-and-from-ason).
 
-### 3.2 Converting ASON/ASONB to JSON
+### 3.2 Converting from ASON/ASONB to JSON
 
-JSON has a limited set of data types compared to ASON and ASONB. Specifically, JSON only supports:
+JSON supports fewer data types than ASON and ASONB. JSON has only six types:
 
 - Null
 - Boolean
@@ -63,9 +64,9 @@ JSON has a limited set of data types compared to ASON and ASONB. Specifically, J
 - Array
 - Object
 
-As a result, certain ASON/ASONB types must be mapped to compatible JSON types.
+ASON and ASONB types without a direct JSON equivalent are mapped to compatible JSON types.
 
-The following table summarizes the conversion rules from ASON/ASONB to JSON:
+The table below summarizes how ASON/ASONB types map to JSON:
 
 | ASON/ASONB Type                          | JSON Type                       |
 |------------------------------------------|---------------------------------|
@@ -75,7 +76,7 @@ The following table summarizes the conversion rules from ASON/ASONB to JSON:
 | Character                                | String                          |
 | String                                   | String                          |
 | DateTime                                 | String in RFC 3339 format       |
-| Byte Data                                | String in Base64 format         |
+| Byte data                                | String in Base64 format         |
 | List                                     | Array                           |
 | Tuple                                    | Array                           |
 | Object                                   | Object                          |
@@ -83,17 +84,17 @@ The following table summarizes the conversion rules from ASON/ASONB to JSON:
 | Enumeration                              | Object                          |
 | `Option::Some(value)` / `Option::None`   | `value` / `null`                |
 
-#### 3.2.1 Number
+#### 3.2.1 Numbers
 
 - Integers outside the range [-(2^53 - 1), 2^53 - 1] may lose precision when parsed by JSON implementations that use double-precision floating-point numbers, such as JavaScript (see the [ECMAScript specification](https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-ecmascript-language-types-number-type)).
 - Special floating-point values, such as `NaN`, `Inf`, and `-Inf`, cannot be represented in JSON and conversion fails.
 - JSON numbers do not preserve whether a value was originally `f32` or `f64`.
 
-Byte Data is encoded using the standard Base64 alphabet defined in [RFC 4648](https://datatracker.ietf.org/doc/html/rfc4648#section-4), with `=` padding.
+Byte data is encoded with the standard Base64 alphabet and `=` padding defined in [RFC 4648, Section 4](https://datatracker.ietf.org/doc/html/rfc4648#section-4).
 
-#### 3.2.2 Map
+#### 3.2.2 Maps
 
-Maps are represented in JSON as arrays of key-value pair objects. Each pair is an object with `key` and `value` fields, and the source order is preserved:
+Maps become JSON arrays of key-value pair objects. Each object has `key` and `value` fields, and entries remain in their original order:
 
 ```text
 [
@@ -108,7 +109,7 @@ Maps are represented in JSON as arrays of key-value pair objects. Each pair is a
 ]
 ```
 
-For example, the following ASONB map:
+For example, this ASONB map:
 
 ```text
 [
@@ -117,7 +118,7 @@ For example, the following ASONB map:
 ]
 ```
 
-would be represented in JSON as:
+becomes:
 
 ```json
 [
@@ -132,9 +133,9 @@ would be represented in JSON as:
 ]
 ```
 
-#### 3.2.3 Enumeration
+#### 3.2.3 Enumerations
 
-Enumerations are represented in JSON in adjacently tagged form: each value becomes an object containing a `variant` field and, if the variant carries a value, a `value` field:
+Enumerations use an adjacent-tagged JSON representation. Each value becomes an object with a `variant` field and, when the variant has a payload, a `value` field:
 
 ```text
 {
@@ -143,7 +144,7 @@ Enumerations are represented in JSON in adjacently tagged form: each value becom
 }
 ```
 
-Consider the following enumeration:
+For example, consider this enumeration:
 
 ```rust
 enum Action {
@@ -154,7 +155,7 @@ enum Action {
 }
 ```
 
-The variants of `Action` are represented in JSON as follows:
+Its variants map to JSON as follows:
 
 - `Action::Quit`:
 
@@ -194,13 +195,13 @@ The variants of `Action` are represented in JSON as follows:
 }
 ```
 
-Note that the enumeration name (`Action` in this example) is not included in the JSON representation.
+The JSON representation does not include the enumeration's type name (`Action` here).
 
-Variants that carry a single Tuple or Object value are represented as arrays or objects, respectively, just like Tuple-like and Struct-like variants.
+Variants whose payload is a single Tuple or Object use the same array or object representation as other tuple-like or struct-like variants.
 
 #### 3.2.4 `Option`
 
-Options are represented in JSON as either `null` for `None` or the value itself for `Some(value)`. For example:
+Options map to `null` for `None` and to the contained value for `Some(value)`:
 
 ```text
 Option::None -> null
@@ -209,9 +210,9 @@ Option::Some(VALUE) -> VALUE
 
 ### 3.3 Converting from JSON to ASON/ASONB
 
-When converting to ASON/ASONB, the entire JSON structure must be taken into account, since context may affect how certain values, such as `null`, are interpreted.
+JSON-to-ASON/ASONB conversion considers the entire document because context affects how values such as `null` are interpreted.
 
-This table summarizes how JSON types are converted to ASON/ASONB types:
+The table below summarizes how JSON types map to ASON/ASONB:
 
 | JSON Type | ASON/ASONB Type                                                                         |
 |-----------|-----------------------------------------------------------------------------------------|
@@ -223,16 +224,16 @@ This table summarizes how JSON types are converted to ASON/ASONB types:
 
 #### 3.3.1 Numbers
 
-Numbers containing a decimal point (`.`) or an exponent (`e` or `E`) are treated as floating-point numbers and are always converted to `f64`. Other numbers are treated as integers and are converted to various integer types depending on their range:
+Numbers with a decimal point (`.`) or exponent (`e` or `E`) are treated as floating-point values and converted to `f64`. Other numbers are treated as integers and assigned a type based on their range:
 
 - `i32`: if its value is within `[i32::MIN, i32::MAX]`
 - `i64`: if its value is within `[i64::MIN, i64::MAX]`
 - `u64`: if its value is larger than `i64::MAX` and less than or equal to `u64::MAX`
 - `f64`: if an integer is outside the ranges of `i32`, `i64`, and `u64`.
 
-#### 3.3.2 Array
+#### 3.3.2 Arrays
 
-Arrays are converted to Lists if all elements have the same ASON type after numeric promotion; otherwise, conversion fails.
+An array becomes a List if all its elements have the same ASON type after numeric promotion. Otherwise, conversion fails.
 
 For example:
 
@@ -240,21 +241,21 @@ For example:
 [1, 2, 3]
 ```
 
-is converted to a List of integers. However, the following array cannot be converted, because its elements are not homogeneous:
+becomes a List of integers. This array cannot be converted because its elements have different types:
 
 ```json
 [1, "two", true]
 ```
 
-The type of an array is determined by the ASON types of its elements, not by its length. After recursively converting nested values and applying numeric type promotion, all elements must have the same ASON type. If the type of an empty array cannot be inferred from its context or sibling elements, it defaults to a List of `i32`. For arrays containing objects or `null`, see the following sections.
+An array's type depends on its elements, not its length. After nested values are converted and numeric promotion is applied, all elements must have the same ASON type. An empty array defaults to a List of `i32` when its type cannot be inferred from context or sibling elements. See the following sections for arrays containing objects or `null`.
 
-If an array contains nested arrays, each nested array must be homogeneous, and all nested arrays must have the same ASON type. For example,
+For nested arrays, each inner array must be homogeneous, and all inner arrays must have the same ASON type. For example:
 
 ```json
 [[1, 2], [3, 4]]
 ```
 
-is converted to a List of Lists of integers. The following arrays cannot be converted: the first contains inner arrays with incompatible element types, and the second contains inner arrays with different ASON types.
+becomes a List of Lists of integers. These arrays cannot be converted: the first has an inner array with mixed element types, and the second has inner arrays with different ASON types.
 
 ```json
 [[1, 2], ["one", "two"]]
@@ -264,17 +265,17 @@ is converted to a List of Lists of integers. The following arrays cannot be conv
 [[1], ["one"]]
 ```
 
-Empty nested arrays are assigned the type inferred from their sibling arrays when possible. Otherwise, they default to a List of `i32`. For example,
+When possible, an empty nested array takes its type from sibling arrays. Otherwise, it defaults to a List of `i32`. For example:
 
 ```json
 [[], ["foo", "bar"]]
 ```
 
-is converted to a List of Lists of String, with the empty nested array being treated as a List of `String`.
+becomes a List of Lists of String; the empty inner array is inferred as a List of `String`.
 
-#### 3.3.3 Object
+#### 3.3.3 Objects
 
-Objects are converted to ASON/ASONB objects if all keys are valid identifiers.
+An object becomes an ASON/ASONB Object if all its keys are valid identifiers.
 
 For example:
 
@@ -282,9 +283,9 @@ For example:
 {"id": 1, "name": "Alice"}
 ```
 
-is converted to an ASON/ASONB Object.
+becomes an ASON/ASONB Object.
 
-If any key is not a valid identifier, the object can be converted to a Map if its values have the same ASON type after numeric promotion.
+If any key is not a valid identifier, the object can become a Map only if all its values have the same ASON type after numeric promotion.
 
 For example, the following object can be converted to a Map:
 
@@ -296,19 +297,19 @@ If a JSON object cannot be converted to an ASON/ASONB Object or Map, conversion 
 
 JSON objects with duplicate keys are rejected. Strings containing unpaired surrogate escapes are also rejected because ASON strings require valid Unicode scalar values.
 
-For an array of objects, all items are examined to determine the keys and value types, since some keys may be missing from some items. A missing key is treated as having a `null` value. For each key, its non-null values must have the same ASON type after numeric promotion; otherwise, conversion fails. A missing or explicitly null value is converted to `Option::None`, while non-null values for that key are wrapped in `Option::Some(value)`.
+For an array of objects, conversion examines every item to collect the keys and infer value types. A missing key is treated as `null`. For each key, all non-null values must have the same ASON type after numeric promotion; otherwise, conversion fails. Missing and explicitly null values become `Option::None`; non-null values become `Option::Some(value)`.
 
-If the keys of an empty object cannot be determined from context, the conversion fails, because ASON/ASONB does not allow Objects without keys.
+If context does not provide keys for an empty object, conversion fails because ASON/ASONB Objects must have keys.
 
 #### 3.3.4 Handling `null` Values
 
-A standalone `null` is converted to `Option::None` of type `Option<i32>`. A `null` object property is likewise converted to `Option::None` of type `Option<i32>`, unless its type can be inferred from context. In an ordinary object, only the property whose value is `null` becomes an Option; other properties are converted independently.
+A standalone `null` becomes `Option::None` with type `Option<i32>`. A `null` object property uses the same default unless its type can be inferred from context. In an ordinary object, only null-valued properties become Options; other properties are converted independently.
 
-When `null` appears in an array, or as a value for the same key across objects in an array, it is converted to `Option::None`, and the other values at that position or key are wrapped in `Option::Some(value)`. The type of the `Option` is determined by the non-null values; if all values are `null`, it defaults to `Option<i32>`. If the non-null values have different ASON types after numeric promotion, conversion fails.
+When `null` appears in an array or for a key shared across an array of objects, it becomes `Option::None`; the corresponding non-null values become `Option::Some(value)`. The non-null values determine the Option's type. If all values are null, the type defaults to `Option<i32>`. Conversion fails if the non-null values have incompatible ASON types after numeric promotion.
 
 #### 3.3.5 Numeric Type Promotion
 
-When determining a common ASON type for numeric array elements, Map values, or values of the same key across an array of objects, apply these promotion rules:
+When finding a common ASON type for numeric array elements, Map values, or values for the same key across an array of objects, use these promotion rules:
 
 - `i32` and `i64` values are promoted to `i64`.
 - Signed integer values (`i32` or `i64`) mixed with `u64` values are promoted to `u64` if all values are non-negative; otherwise, conversion fails.
@@ -317,25 +318,21 @@ When determining a common ASON type for numeric array elements, Map values, or v
 
 Promotion to `f64` may lose integer precision for large values.
 
-## 4. Installation
+## 4 Command-Line Tools
 
-You can install ASON Converter using Cargo:
+The `ason-convert-cli` package provides two commands: `ason2b` converts between ASON and ASONB, and `ason2j` converts between ASON/ASONB and JSON.
 
-```sh
-cargo install ason-convert-cli
-```
+### 4.1 Installation
 
-Or install from the local path (within the root of the source tree):
+From the workspace root, install the CLI tools with Cargo:
 
 ```sh
 cargo install --path crates/ason-convert-cli
 ```
 
-## 5. Usage
+### 4.2 Commands
 
-ASON Converter provides two commands: `ason2b` and `ason2j`.
-
-### `ason2b`
+#### 4.2.1 `ason2b`
 
 ```text
 NAME
@@ -345,17 +342,17 @@ SYNOPSIS
     ason2b [options] [INPUT] [-o OUTPUT]
 
 DESCRIPTION
-    The conversion direction is determined automatically from the input and output file names, or from the header of the input data if no file name is provided. In other words, by default the command automatically converts between ASON and ASONB in either direction.
+    The command determines the conversion direction from the input and output file names. If a file name does not identify the input format, it checks the input header. By default, it converts between ASON and ASONB in either direction.
 
-    Use `-t` to indicate conversion from ASONB to ASON, or `-b` to indicate conversion from ASON to ASONB.
+    Use `-t` to force conversion from ASONB to ASON, or `-b` to force conversion from ASON to ASONB.
 
     If no input file is specified, input is read from standard input.
 
     If no output file is specified, output is written to standard output.
 
 OPTIONS
-    -t, --text          Indicate conversion from ASONB to ASON
-    -b, --binary        Indicate conversion from ASON to ASONB (Default)
+    -t, --text          Force conversion from ASONB to ASON
+    -b, --binary        Force conversion from ASON to ASONB
     -o OUTPUT           Specify the output file
     --complete SHELL    Generate a shell completion script for the specified shell
                         Supported shells: bash, zsh, fish, powershell
@@ -364,29 +361,29 @@ OPTIONS
 
 EXIT STATUS
 
-    The command exits with a status code indicating the result of the conversion:
+    The command exits with one of these status codes:
     0   Successful conversion
     1   An error occurred during conversion
     2   No conversion was performed
-    3   Input is ASONB while the `-b` / `--binary` flag is specified
-    4   Input is ASON while the `-t` / `--text` flag is specified
-    5   Writing ASONB to a terminal is an error
+    3   Input is ASONB while `-b` / `--binary` is specified
+    4   Input is ASON while `-t` / `--text` is specified
+    5   ASONB output is directed to a terminal
 
 EXAMPLES
-    * Convert ASON file to ASONB file
+    * Convert an ASON file to ASONB
         ason2b input.ason -o output.asonb
 
-    * Convert ASONB file to ASON file
+    * Convert an ASONB file to ASON
         ason2b input.asonb -o output.ason
 
-    * Convert ASON from stdin to ASONB file
+    * Convert ASON from standard input to an ASONB file
         echo '{key: "value"}' | ason2b -o output.asonb
 
-    * Convert ASON from stdin to ASONB and then back to ASON
+    * Convert ASON from standard input to ASONB, then back to ASON
         echo '{key: "value"}' | ason2b | ason2b
 ```
 
-### `ason2j`
+#### 4.2.2 `ason2j`
 
 ```text
 NAME
@@ -396,9 +393,9 @@ SYNOPSIS
     ason2j [options] [INPUT] [-o OUTPUT]
 
 DESCRIPTION
-    The conversion direction and encoding are determined automatically from the input and output file names. "*.json" and "*.jsonc" indicate JSON, "*.ason" indicates ASON, and "*.asonb" indicates ASONB.
+    The command determines the input and output formats from the file names. The extensions `.json` and `.jsonc` indicate JSON, `.ason` indicates ASON, and `.asonb` indicates ASONB. If the input has no recognized extension, the command checks its header for ASONB; otherwise, it treats the input as ASON. Use `-r` to treat input without a recognized extension as JSON.
 
-    If no file name is provided, ASON/ASONB is converted to JSON by default. Use `-r` / `--reverse` to convert JSON to ASON/ASONB. When converting JSON, output is ASON by default; use `-t` / `--text` for ASON or `-b` / `--binary` for ASONB.
+    By default, ASON or ASONB input is converted to JSON. Use `-r` / `--reverse` to convert JSON input to ASON/ASONB. ASON is the default output format; use `-t` / `--text` to select ASON or `-b` / `--binary` to select ASONB.
 
     If no input file is specified, input is read from standard input.
 
@@ -415,65 +412,65 @@ OPTIONS
     --version           Show version information
 
 EXIT STATUS
-    The command exits with a status code indicating the result of the conversion:
+    The command exits with one of these status codes:
     0   Successful conversion
     1   An error occurred during conversion
     2   No conversion was performed
-    3   Output file name is "*.ason" while the `-b` flag is specified
-    4   Output file name is "*.asonb" while the `-t` flag is specified
-    5   Writing ASONB to a terminal is an error
+    3   The output file has the `.ason` extension while `-b` / `--binary` is specified
+    4   The output file has the `.asonb` extension while `-t` / `--text` is specified
+    5   ASONB output is directed to a terminal
 
 EXAMPLES
-    * Convert ASON/ASONB file to JSON file
+    * Convert an ASON or ASONB file to JSON
         ason2j input.ason -o output.json
         ason2j input.asonb -o output.json
 
-    * Convert JSON file to ASON/ASONB file
+    * Convert a JSON file to ASON or ASONB
         ason2j input.json -o output.ason
         ason2j input.json -o output.asonb
 
-    * Convert JSON from stdin to ASON on stdout
+    * Convert JSON from standard input to ASON on standard output
         echo '{"key": "value"}' | ason2j -r
 
-    * Convert JSON file to ASONB and pipe to another command
+    * Convert a JSON file to ASONB and pipe it to another command
         ason2j input.json -b | some_command
 ```
 
-## 6. Using as a Library
+## 5 Library Usage
 
-The core library is the `ason-convert` package. To use a local checkout from another Rust project, add it to that project's `Cargo.toml`:
+The core library is provided by the `ason-convert` package. It is not yet published to crates.io, so to use a local checkout, add its path to your project's `Cargo.toml`:
 
 ```toml
 [dependencies]
-ason-convert = "0.1.0"
+ason-convert = { path = "../ason-converter/crates/ason-convert" }
 ```
 
-The library API returns `Result<_, ConversionError>`, where `ConversionError` implements `std::error::Error`. For example, convert ASON to ASONB, back to ASON, and then to JSON:
+The conversion functions return `Result<_, ConversionError>`. `ConversionError` implements `std::error::Error`, so it can be propagated with `?`. For example, convert ASON to ASONB, back to ASON, and then to JSON:
 
 ```rust
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-  let input = r#"{name: "Ada"}"#;
+    let input = r#"{name: "Ada"}"#;
 
-  let binary = ason_convert::ason_to_asonb(input)?;
-  let ason = ason_convert::asonb_to_ason(&binary)?;
-  let json = ason_convert::ason_to_json(&ason)?;
+    let binary = ason_convert::ason_to_asonb(input)?;
+    let ason = ason_convert::asonb_to_ason(&binary)?;
+    let json = ason_convert::ason_to_json(&ason)?;
 
-  println!("{json}");
-  Ok(())
+    println!("{json}");
+    Ok(())
 }
 ```
 
-For JSON or JSONC input, use `json_to_ason` or `json_to_asonb`. `format_json` parses JSONC, discards comments, and returns formatted JSON. `asonb_to_json` converts a complete ASONB document; `asonb_reader_to_ason` and `asonb_reader_to_json` accept `Read`/`Write` streams and stream only when the root value is a multi-chunk List.
+For JSON or JSONC input, use `json_to_ason` or `json_to_asonb`. `format_json` parses JSONC, removes comments, and returns formatted JSON. `asonb_to_json` converts a complete ASONB document. The reader functions `asonb_reader_to_ason` and `asonb_reader_to_json` accept `Read`/`Write` streams and stream only when the root value is a multi-chunk List.
 
-The `ason-convert` library is separate from `ason-convert-cli`, so depending on the library does not add the CLI's `clap` dependencies. The package is not published independently yet, and its ASON/ASONB dependencies currently use local absolute paths; using it outside this development environment requires making those dependencies available through portable Git or registry references.
+The `ason-convert` library is separate from `ason-convert-cli`, so depending on it does not add the CLI's `clap` dependencies. Its ASON and ASONB dependencies currently use local absolute paths. To build it outside this development environment, those dependencies must first be changed to portable Git or registry references.
 
-## 7. Links
+## 6 Links
 
 - [ASON Specification](https://github.com/hemashushu/ason/blob/main/docs/specification.md)
 - [ASONB Specification](https://github.com/hemashushu/asonb/blob/main/README.md)
 - [ASON Library (Rust)](https://github.com/hemashushu/ason)
 - [ASONB Library (Rust)](https://github.com/hemashushu/asonb)
 
-## 8. License
+## 7 License
 
 This project is licensed under the MPL 2.0 License with additional terms. See [LICENSE](./LICENSE) and [LICENSE.additional](./LICENSE.additional).
