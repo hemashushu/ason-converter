@@ -20,24 +20,36 @@ use ason_convert::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+/// A format recognized by the command-line converters.
 enum Format {
+    /// Human-readable ASON text.
     Ason,
+    /// Binary ASONB document data.
     Asonb,
+    /// JSON or JSONC text.
     Json,
 }
 
+/// The input reader and the format hints discovered while opening it.
 struct InputSource {
+    /// Reads the complete input, including any bytes consumed during header detection.
     reader: Box<dyn Read>,
+    /// A format inferred from the input file extension, when it is recognized.
     extension_format: Option<Format>,
+    /// Whether the first eight input bytes match the ASONB document signature.
     has_binary_header: bool,
 }
 
+/// An error message paired with the process exit code expected by the CLI.
 struct CliError {
+    /// The status code returned to the operating system.
     code: u8,
+    /// The message printed to standard error; an empty message is kept silent.
     message: String,
 }
 
 impl CliError {
+    /// Creates a command-line error from a code and any value that can be displayed as text.
     fn new(code: u8, message: impl Into<String>) -> Self {
         Self {
             code,
@@ -47,6 +59,7 @@ impl CliError {
 }
 
 impl From<io::Error> for CliError {
+    /// Uses the general I/O failure status for file, pipe, and terminal errors.
     fn from(error: io::Error) -> Self {
         Self::new(1, error.to_string())
     }
@@ -56,10 +69,13 @@ type CliResult<T> = std::result::Result<T, CliError>;
 
 #[derive(Parser)]
 #[command(name = "ason2b", version, about = "Convert ASON to and from ASONB")]
+/// Arguments accepted by the `ason2b` command.
 struct Ason2bArgs {
+    /// Optional input file; standard input is used when this is omitted.
     #[arg(value_name = "INPUT", help = "Input file (defaults to standard input)")]
     input: Option<PathBuf>,
 
+    /// Requires ASONB input and selects ASON text output.
     #[arg(
         short = 't',
         long = "text",
@@ -68,6 +84,7 @@ struct Ason2bArgs {
     )]
     force_text: bool,
 
+    /// Requires ASON input and selects ASONB binary output.
     #[arg(
         short = 'b',
         long = "binary",
@@ -76,6 +93,7 @@ struct Ason2bArgs {
     )]
     force_binary: bool,
 
+    /// Optional output file; standard output is used when this is omitted.
     #[arg(
         short = 'o',
         value_name = "OUTPUT",
@@ -83,6 +101,7 @@ struct Ason2bArgs {
     )]
     output: Option<PathBuf>,
 
+    /// Prints a shell completion script instead of converting a document.
     #[arg(
         long = "complete",
         value_name = "SHELL",
@@ -97,10 +116,13 @@ struct Ason2bArgs {
     version,
     about = "Convert ASON/ASONB to and from JSON"
 )]
+/// Arguments accepted by the `ason2j` command.
 struct Ason2jArgs {
+    /// Optional input file; standard input is used when this is omitted.
     #[arg(value_name = "INPUT", help = "Input file (defaults to standard input)")]
     input: Option<PathBuf>,
 
+    /// Treats input with no recognized extension as JSON or JSONC.
     #[arg(
         short = 'r',
         long = "reverse",
@@ -108,6 +130,7 @@ struct Ason2jArgs {
     )]
     reverse: bool,
 
+    /// Selects ASON text output; by default, JSON input is converted to ASON.
     #[arg(
         short = 't',
         long = "text",
@@ -116,6 +139,7 @@ struct Ason2jArgs {
     )]
     text: bool,
 
+    /// Selects ASONB binary output.
     #[arg(
         short = 'b',
         long = "binary",
@@ -124,6 +148,7 @@ struct Ason2jArgs {
     )]
     binary: bool,
 
+    /// Optional output file; standard output is used when this is omitted.
     #[arg(
         short = 'o',
         value_name = "OUTPUT",
@@ -131,6 +156,7 @@ struct Ason2jArgs {
     )]
     output: Option<PathBuf>,
 
+    /// Prints a shell completion script instead of converting a document.
     #[arg(
         long = "complete",
         value_name = "SHELL",
@@ -139,6 +165,11 @@ struct Ason2jArgs {
     complete: Option<String>,
 }
 
+/// Parses arguments and runs the `ason2b` command-line application.
+///
+/// Conversion errors are printed to standard error and returned as process exit codes. A
+/// successful completion-script request intentionally returns status code 2 for compatibility
+/// with this command's existing behavior.
 pub fn run_ason2b() -> ExitCode {
     let args = match parse_args::<Ason2bArgs>() {
         Ok(args) => args,
@@ -156,6 +187,11 @@ pub fn run_ason2b() -> ExitCode {
     }
 }
 
+/// Parses arguments and runs the `ason2j` command-line application.
+///
+/// Conversion errors are printed to standard error and returned as process exit codes. A
+/// successful completion-script request intentionally returns status code 2 for compatibility
+/// with this command's existing behavior.
 pub fn run_ason2j() -> ExitCode {
     let args = match parse_args::<Ason2jArgs>() {
         Ok(args) => args,
@@ -173,6 +209,7 @@ pub fn run_ason2j() -> ExitCode {
     }
 }
 
+/// Parses command-line arguments and prints Clap's help or error message when parsing fails.
 fn parse_args<T: Parser>() -> std::result::Result<T, u8> {
     T::try_parse().map_err(|error| {
         let code = match error.kind() {
@@ -184,6 +221,7 @@ fn parse_args<T: Parser>() -> std::result::Result<T, u8> {
     })
 }
 
+/// Writes a completion script for one of the shells supported by Clap Complete.
 fn emit_completion<T: CommandFactory>(shell: &str, name: &str) -> CliResult<()> {
     let shell = match shell.to_ascii_lowercase().as_str() {
         "bash" => Shell::Bash,
@@ -202,6 +240,12 @@ fn emit_completion<T: CommandFactory>(shell: &str, name: &str) -> CliResult<()> 
     Ok(())
 }
 
+/// Determines the source and destination formats, then runs the requested ASON/ASONB conversion.
+///
+/// A recognized file extension takes precedence over binary-header detection. Without an
+/// extension, the ASONB header determines the source format; otherwise the input is treated as
+/// ASON. Explicit mode flags and the output extension select the destination, with conflicts
+/// rejected before any conversion is written.
 fn run_ason2b_command(args: Ason2bArgs) -> CliResult<()> {
     let input = open_input(args.input.as_deref())?;
     let source = input
@@ -271,6 +315,12 @@ fn run_ason2b_command(args: Ason2bArgs) -> CliResult<()> {
     Ok(())
 }
 
+/// Determines the source and destination formats, then runs the requested ASON/ASONB/JSON conversion.
+///
+/// A recognized input extension takes precedence over the `-r` fallback and header detection.
+/// For inputs without a recognized extension, `-r` selects JSON; otherwise the ASONB signature
+/// selects binary input and text is treated as ASON. The output mode, output extension, and
+/// explicit flags are checked for conflicts before processing begins.
 fn run_ason2j_command(args: Ason2jArgs) -> CliResult<()> {
     let input = open_input(args.input.as_deref())?;
     let extension_format = input.extension_format;
@@ -381,11 +431,16 @@ fn run_ason2j_command(args: Ason2jArgs) -> CliResult<()> {
     Ok(())
 }
 
+/// Returns an error when binary ASONB data would be written directly to a terminal.
 fn binary_terminal_write_error(destination: Format, output_is_terminal: bool) -> Option<CliError> {
     (destination == Format::Asonb && output_is_terminal)
         .then(|| CliError::new(5, "Writing ASONB to a terminal is not allowed."))
 }
 
+/// Opens a file or standard input and detects its extension and ASONB signature.
+///
+/// At most the first eight bytes are read for signature detection. Those bytes are chained back
+/// in front of the remaining reader so downstream parsers receive the original complete input.
 fn open_input(path: Option<&Path>) -> CliResult<InputSource> {
     let extension_format = path.and_then(ason2j_extension_format);
     let mut source: Box<dyn Read> = match path {
@@ -402,6 +457,7 @@ fn open_input(path: Option<&Path>) -> CliResult<InputSource> {
         }
         prefix.extend_from_slice(&buffer[..count]);
     }
+    // Keep the probed prefix in the reader; detection must not consume input from the converter.
     let has_binary_header = prefix.as_slice() == b"\0ASONB\0\x01";
     let reader = Cursor::new(prefix).chain(source);
     Ok(InputSource {
@@ -411,6 +467,7 @@ fn open_input(path: Option<&Path>) -> CliResult<InputSource> {
     })
 }
 
+/// Infers an ASON or ASONB format from an `ason2b` input or output path extension.
 fn ason2b_extension_format(path: &Path) -> Option<Format> {
     match path.extension()?.to_str()? {
         "ason" => Some(Format::Ason),
@@ -419,6 +476,7 @@ fn ason2b_extension_format(path: &Path) -> Option<Format> {
     }
 }
 
+/// Infers an ASON, ASONB, JSON, or JSONC format from a path extension.
 fn ason2j_extension_format(path: &Path) -> Option<Format> {
     match path.extension()?.to_str()? {
         "ason" => Some(Format::Ason),
@@ -428,6 +486,10 @@ fn ason2j_extension_format(path: &Path) -> Option<Format> {
     }
 }
 
+/// Opens an output file or wraps standard output in a buffered writer.
+///
+/// The returned boolean records whether the destination is a terminal, allowing the caller to
+/// prevent binary output from being printed as terminal text.
 fn output_writer(path: Option<&Path>) -> CliResult<(Box<dyn Write>, bool)> {
     match path {
         Some(path) => {
@@ -443,16 +505,19 @@ fn output_writer(path: Option<&Path>) -> CliResult<(Box<dyn Write>, bool)> {
     }
 }
 
+/// Reads all remaining bytes from an input that must be buffered for text conversion.
 fn read_all(mut input: impl Read) -> CliResult<Vec<u8>> {
     let mut bytes = Vec::new();
     input.read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 
+/// Converts a library error to the general conversion-failure exit status.
 fn conversion_error(error: impl std::fmt::Display) -> CliError {
     CliError::new(1, error.to_string())
 }
 
+/// Prints a non-empty error message and returns its configured process exit code.
 fn report_error(error: CliError) -> ExitCode {
     if !error.message.is_empty() {
         eprintln!("{}", error.message);
@@ -466,6 +531,7 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    /// Checks that `ason2b` accepts either mode flag but rejects using both together.
     fn ason2b_text_and_binary_flags_are_mutually_exclusive() {
         let text_short = Ason2bArgs::try_parse_from(["ason2b", "-t"]).unwrap();
         assert!(text_short.force_text);
@@ -485,6 +551,7 @@ mod tests {
     }
 
     #[test]
+    /// Checks `ason2j` mode parsing, including the mutually exclusive output flags.
     fn ason2j_reverse_text_and_binary_flags_are_parsed_and_exclusive() {
         assert!(
             Ason2jArgs::try_parse_from(["ason2j", "--reverse"])
@@ -501,6 +568,7 @@ mod tests {
     }
 
     #[test]
+    /// Ensures ASONB bytes are not sent to an interactive terminal.
     fn terminal_binary_output_uses_exit_code_five() {
         let error = binary_terminal_write_error(Format::Asonb, true).unwrap();
         assert_eq!(error.code, 5);

@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "ason"
-version = "3.3.1"
+version = "3.6.0"
 dependencies = [
  "chrono",
  "hexfloat2",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "ason-convert"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "ason",
  "asonb",
@@ -84,8 +84,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "ason-convert-cli"
-version = "1.0.0"
+name = "ason2b"
+version = "1.1.0"
 dependencies = [
  "ason-convert",
  "asonb",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "asonb"
-version = "3.3.1"
+version = "3.6.0"
 dependencies = [
  "asonb-derive",
  "chrono",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "asonb-derive"
-version = "3.3.0"
+version = "3.4.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

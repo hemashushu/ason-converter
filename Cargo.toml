@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/ason-convert", "crates/ason-convert-cli"]
+members = ["crates/ason-convert", "crates/ason2b"]
 resolver = "3"

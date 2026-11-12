@@ -18,16 +18,39 @@ use serde_json::{Map, Number, Value as JsonValue};
 use crate::{ConversionError, Result, ason_converter::from_asonb_value, jsonc::JsonInput};
 
 #[derive(Clone)]
+/// A converted value paired with the ASONB type inferred for that value.
 struct Node {
+    /// The value in the representation used by the ASON parser and serializer.
     value: AsonValue,
+    /// The schema type needed to encode this value in ASONB.
     ty: Type,
 }
 
+/// Converts a JSON or JSONC document into ASON text.
+///
+/// Integers are inferred as `i32`, `i64`, or `u64` according to their range; decimal numbers
+/// become `f64`. Arrays must have one compatible element type. JSON objects with valid ASON
+/// identifiers become ASON objects, while other object keys are represented as string-keyed
+/// maps. `null` becomes `Option::None` and can cause array items or object fields to use
+/// `Option::Some` as well.
+///
+/// # Errors
+/// Returns an error for invalid JSON/JSONC, duplicate keys, values without a common ASON type,
+/// or values that cannot be represented in the inferred schema.
 pub fn json_to_ason(input: &str) -> Result<String> {
     let node = convert_json_value(crate::jsonc::parse_jsonc(input)?)?;
     Ok(ason::ser_value_to_string(&node.value)?)
 }
 
+/// Converts a JSON or JSONC document into a complete ASONB document.
+///
+/// The returned bytes contain both the inferred document schema and the encoded value. Type
+/// inference follows the same rules as [`json_to_ason`], but also records homogeneous collection
+/// and object field types in the ASONB schema.
+///
+/// # Errors
+/// Returns an error for invalid JSON/JSONC, duplicate keys, incompatible collection values, or
+/// an ASONB encoding failure.
 pub fn json_to_asonb(input: &str) -> Result<Vec<u8>> {
     let node = convert_json_value(crate::jsonc::parse_jsonc(input)?)?;
     let schema = DocumentSchema::new(node.ty.clone());
@@ -37,52 +60,70 @@ pub fn json_to_asonb(input: &str) -> Result<Vec<u8>> {
     Ok(output)
 }
 
+/// Parses JSON or JSONC and returns normalized, pretty-printed JSON.
+///
+/// Comments and trailing commas are accepted on input but are not included in the output.
+///
+/// # Errors
+/// Returns an error if the input is not valid JSON/JSONC or contains duplicate object keys.
 pub fn format_json(input: &str) -> Result<String> {
     let value = json_to_json_value(crate::jsonc::parse_jsonc(input)?);
     Ok(serde_json::to_string_pretty(&value)?)
 }
 
+/// Converts an ASON value to pretty-printed JSON.
+///
+/// ASON lists and tuples become JSON arrays; maps become arrays of `{ "key", "value" }` objects;
+/// enums become objects with a `variant` property and, when present, a `value` property. Bytes
+/// are Base64-encoded strings, dates are RFC 3339 strings, and options map to either `null` or
+/// their contained value.
+///
+/// # Errors
+/// Returns an error for invalid ASON text or values, such as NaN or infinity, that JSON cannot
+/// represent as numbers.
 pub fn ason_to_json(input: &str) -> Result<String> {
     let value = ason::de_value_from_str(input)?;
     json_to_pretty_string(&ason_value_to_json(&value)?)
 }
 
+/// Converts a complete ASONB document to pretty-printed JSON.
+///
+/// The document schema is used to reconstruct ASON values before applying the JSON mappings
+/// described by [`ason_to_json`]. The complete input is decoded in memory.
+///
+/// # Errors
+/// Returns an error for invalid ASONB data, a schema/value mismatch, or a value that JSON cannot
+/// represent.
 pub fn asonb_to_json(input: &[u8]) -> Result<String> {
     let (schema, value) = asonb::de_value_from_reader(Cursor::new(input))?;
     let value = from_asonb_value(&schema, &schema.root, &value)?;
     json_to_pretty_string(&ason_value_to_json(&value)?)
 }
 
+/// Converts an ASONB reader to JSON on a writer, streaming multi-chunk Lists.
+///
+/// For a multi-chunk root List, or a multi-chunk List inside a root `Result::Ok`, each item is
+/// converted and written before the next item is read, so the whole list does not need to be held
+/// in memory. A streamed `Result::Ok` uses the same `variant`/`value` object as other
+/// Enumerations. Other root values are decoded as one value. Stream ownership stays with the
+/// caller.
+///
+/// # Errors
+/// Returns an error for invalid ASONB data, an absent root value, a schema/value mismatch, a JSON
+/// representation error, or an input/output failure.
 pub fn asonb_reader_to_json<R: Read, W: Write>(input: R, output: &mut W) -> Result<()> {
     let mut document = asonb::value_document_reader(input)?;
     let schema = document.schema().clone();
     let root_type = document.root_type().clone();
-    if let Type::List(_, item_type) = &root_type
-        && document.is_streaming_list()
-    {
-        output.write_all(b"[")?;
-        let mut first = true;
-        for value in document {
-            let value = value?;
-            let value = from_asonb_value(&schema, item_type, &value)?;
-            let json = json_to_pretty_string(&ason_value_to_json(&value)?)?;
-            if !first {
-                output.write_all(b",")?;
-            }
-            output.write_all(b"\n")?;
-            for (index, line) in json.lines().enumerate() {
-                if index > 0 {
-                    output.write_all(b"\n")?;
-                }
-                output.write_all(b"    ")?;
-                output.write_all(line.as_bytes())?;
-            }
-            first = false;
-        }
-        if !first {
+    if let Some(item_type) = document.item_type().cloned() {
+        if document.is_streaming_result() {
+            output.write_all(b"{\n    \"variant\": \"Ok\",\n    \"value\": ")?;
+            write_json_items(&schema, &item_type, document, "    ", output)?;
+            output.write_all(b"\n}\n")?;
+        } else {
+            write_json_items(&schema, &item_type, document, "", output)?;
             output.write_all(b"\n")?;
         }
-        output.write_all(b"]\n")?;
     } else {
         let value = document
             .next()
@@ -94,6 +135,48 @@ pub fn asonb_reader_to_json<R: Read, W: Write>(input: R, output: &mut W) -> Resu
     Ok(())
 }
 
+/// Writes streamed List items as a JSON array, starting at the current output position.
+///
+/// Each item is formatted and written before the next one is read; this preserves streaming
+/// without buffering the list. `indent` is the indentation of the line holding the opening `[`.
+fn write_json_items<R: Read, W: Write>(
+    schema: &DocumentSchema,
+    item_type: &Type,
+    items: asonb::ValueDocumentReader<R>,
+    indent: &str,
+    output: &mut W,
+) -> Result<()> {
+    output.write_all(b"[")?;
+    let mut first = true;
+    for value in items {
+        let value = value?;
+        let value = from_asonb_value(schema, item_type, &value)?;
+        let json = json_to_pretty_string(&ason_value_to_json(&value)?)?;
+        if !first {
+            output.write_all(b",")?;
+        }
+        output.write_all(b"\n")?;
+        for (index, line) in json.lines().enumerate() {
+            if index > 0 {
+                output.write_all(b"\n")?;
+            }
+            output.write_all(indent.as_bytes())?;
+            output.write_all(b"    ")?;
+            output.write_all(line.as_bytes())?;
+        }
+        first = false;
+    }
+    if !first {
+        output.write_all(b"\n")?;
+        output.write_all(indent.as_bytes())?;
+    }
+    output.write_all(b"]")?;
+    Ok(())
+}
+
+/// Maps each ASON value variant to its JSON representation.
+///
+/// ASON maps and enums need explicit JSON structures because JSON has no native equivalents.
 fn ason_value_to_json(value: &AsonValue) -> Result<JsonValue> {
     let json = match value {
         AsonValue::I8(value) => JsonValue::Number((*value).into()),
@@ -174,16 +257,21 @@ fn ason_value_to_json(value: &AsonValue) -> Result<JsonValue> {
     Ok(json)
 }
 
+/// Creates a JSON number from a float, rejecting values outside JSON's number domain.
 fn number_from_f64(value: f64) -> Result<JsonValue> {
     Number::from_f64(value)
         .map(JsonValue::Number)
         .ok_or_else(|| ConversionError("JSON cannot represent NaN or infinity.".into()))
 }
 
+/// Serializes a JSON value using the standard pretty-printed layout.
 fn json_to_pretty_string(value: &JsonValue) -> Result<String> {
     Ok(serde_json::to_string_pretty(value)?)
 }
 
+/// Converts the ordered parser representation into `serde_json`'s output representation.
+///
+/// This helper is used for JSON formatting, where no ASON-specific type inference is needed.
 fn json_to_json_value(input: JsonInput) -> JsonValue {
     match input {
         JsonInput::Null => JsonValue::Null,
@@ -207,6 +295,11 @@ fn json_to_json_value(input: JsonInput) -> JsonValue {
     }
 }
 
+/// Infers an ASON value and schema type from one parsed JSON value.
+///
+/// JSON integer ranges are mapped to the smallest supported signed type, then to `u64` for
+/// larger non-negative values. The paired type is kept with the value so collection inference
+/// can later promote all members consistently.
 fn convert_json_value(input: JsonInput) -> Result<Node> {
     match input {
         JsonInput::Null => Ok(option_none(Type::I32)),
@@ -254,6 +347,11 @@ fn convert_json_value(input: JsonInput) -> Result<Node> {
     }
 }
 
+/// Converts a JSON array and infers one shared element type for all of its items.
+///
+/// Arrays containing objects may be represented as rows of one object schema. If any element is
+/// `null`, every row is wrapped in the same `Option<T>` type after the non-null elements have
+/// established `T`.
 fn convert_array(values: Vec<JsonInput>) -> Result<Node> {
     if values.is_empty() {
         return Ok(Node {
@@ -274,6 +372,7 @@ fn convert_array(values: Vec<JsonInput>) -> Result<Node> {
     }
 
     let contains_null = values.iter().any(|value| matches!(value, JsonInput::Null));
+    // Infer the optional payload from real values first; null entries do not constrain its type.
     let mut nodes = values
         .into_iter()
         .map(convert_json_value)
@@ -318,6 +417,11 @@ fn convert_array(values: Vec<JsonInput>) -> Result<Node> {
     })
 }
 
+/// Infers one row-object schema for an array of objects, ignoring `null` rows.
+///
+/// Fields are kept in the order they first appear. A field absent from a row becomes optional,
+/// and a null row makes the row type itself optional. `None` means a field name cannot be emitted
+/// as an ASON identifier, so the caller should use the general array conversion instead.
 fn convert_object_array(values: &[JsonInput]) -> Result<Option<Node>> {
     let mut keys = Vec::new();
     let objects = values
@@ -366,6 +470,7 @@ fn convert_object_array(values: &[JsonInput]) -> Result<Option<Node>> {
 
     let object_type = Type::Object(String::new(), field_types);
     let (item_type, row_values) = if values.iter().any(|value| matches!(value, JsonInput::Null)) {
+        // Keep null rows in place and wrap object rows with the same inferred Option schema.
         let item_type = option_type(object_type.clone());
         let mut rows = rows.into_iter();
         let row_values = values
@@ -391,6 +496,11 @@ fn convert_object_array(values: &[JsonInput]) -> Result<Option<Node>> {
     }))
 }
 
+/// Converts possibly missing object-field values into nodes with a shared optional schema.
+///
+/// Repeated nested objects are first grouped into one object schema. Missing fields and explicit
+/// `null` values then use `None`, while present fields use `Some`; non-object values keep their
+/// regular conversion path.
 fn convert_optional_nodes(values: &[Option<&JsonInput>]) -> Result<Vec<Node>> {
     let object_count = values
         .iter()
@@ -459,6 +569,10 @@ fn convert_optional_nodes(values: &[Option<&JsonInput>]) -> Result<Vec<Node>> {
         .collect()
 }
 
+/// Converts a JSON object to an ASON object when possible, otherwise to a map.
+///
+/// ASON object field names must be valid identifiers. If even one key cannot be used as a field
+/// name, all fields are represented as entries in a string-keyed map so that no key is changed.
 fn convert_object(fields: Vec<(String, JsonInput)>) -> Result<Node> {
     if fields.is_empty() {
         return Err(ConversionError(
@@ -496,6 +610,7 @@ fn convert_object(fields: Vec<(String, JsonInput)>) -> Result<Node> {
     }
 }
 
+/// Builds the schema used to represent `Option<T>` as an ASONB enum.
 fn option_type(item: Type) -> Type {
     Type::Enum(
         "Option".into(),
@@ -506,6 +621,7 @@ fn option_type(item: Type) -> Type {
     )
 }
 
+/// Creates the `None` value and its matching `Option<T>` schema node.
 fn option_none(item: Type) -> Node {
     Node {
         value: AsonValue::Option(None),
@@ -513,6 +629,7 @@ fn option_none(item: Type) -> Node {
     }
 }
 
+/// Creates the `Some(value)` value and its matching `Option<T>` schema node.
 fn option_some(value: AsonValue, item: Type) -> Node {
     Node {
         value: AsonValue::Option(Some(Box::new(value))),
@@ -520,6 +637,7 @@ fn option_some(value: AsonValue, item: Type) -> Node {
     }
 }
 
+/// Returns the payload type when `ty` is the generated `Option<T>` enum schema.
 fn option_inner_type(ty: &Type) -> Option<Type> {
     let Type::Enum(name, variants) = ty else {
         return None;
@@ -533,6 +651,7 @@ fn option_inner_type(ty: &Type) -> Option<Type> {
     })
 }
 
+/// Finds a common type for nodes and coerces each value to match it.
 fn unify_nodes(nodes: &[Node]) -> Result<(Type, Vec<AsonValue>)> {
     let ty = unify_type(nodes)?;
     let values = nodes
@@ -542,6 +661,11 @@ fn unify_nodes(nodes: &[Node]) -> Result<(Type, Vec<AsonValue>)> {
     Ok((ty, values))
 }
 
+/// Infers the most specific common type supported by the values in a collection.
+///
+/// This handles numeric promotion, nested lists, object/map combinations, and optional values.
+/// If none of those rules can describe every value, conversion fails instead of producing a
+/// schema that loses information.
 fn unify_type(nodes: &[Node]) -> Result<Type> {
     let Some(first) = nodes.first() else {
         return Ok(Type::I32);
@@ -650,10 +774,15 @@ fn unify_type(nodes: &[Node]) -> Result<Type> {
     ))
 }
 
+/// Reports whether a type participates in the numeric promotion rules.
 fn numeric_type(ty: &Type) -> bool {
     matches!(ty, Type::I32 | Type::I64 | Type::U64 | Type::F64)
 }
 
+/// Chooses a common numeric type without narrowing any input value.
+///
+/// Floating-point values take precedence. Otherwise, unsigned values use `u64` unless a negative
+/// signed value is present, in which case there is no lossless common integer type.
 fn unify_numeric_type(nodes: &[Node]) -> Result<Type> {
     let has_float = nodes.iter().any(|node| node.ty == Type::F64);
     if has_float {
@@ -675,6 +804,7 @@ fn unify_numeric_type(nodes: &[Node]) -> Result<Type> {
     Ok(if has_i64 { Type::I64 } else { Type::I32 })
 }
 
+/// Reads a numeric ASON value as `f64` for sign checks during type inference.
 fn numeric_as_f64(value: &AsonValue) -> Option<f64> {
     match value {
         AsonValue::I32(value) => Some(*value as f64),
@@ -685,6 +815,11 @@ fn numeric_as_f64(value: &AsonValue) -> Option<f64> {
     }
 }
 
+/// Promotes a value to the inferred type, recursively handling containers and options.
+///
+/// Numeric conversions are explicit so invalid promotions, especially negative integers to
+/// `u64`, return a useful error rather than wrapping. Object fields can also be promoted to map
+/// entries when a common collection type requires it.
 fn coerce_value(value: AsonValue, ty: &Type) -> Result<AsonValue> {
     Ok(match (value, ty) {
         (AsonValue::I32(value), Type::I64) => AsonValue::I64(value as i64),
@@ -755,6 +890,7 @@ fn coerce_value(value: AsonValue, ty: &Type) -> Result<AsonValue> {
     })
 }
 
+/// Checks whether a value has the expected top-level ASON type without converting it.
 fn value_matches_type(value: &AsonValue, ty: &Type) -> bool {
     matches!(
         (value, ty),
@@ -771,6 +907,10 @@ fn value_matches_type(value: &AsonValue, ty: &Type) -> bool {
     )
 }
 
+/// Encodes an inferred ASON value using its matching ASONB schema type.
+///
+/// Container shapes and object field counts are checked here as a final consistency guard before
+/// the lower-level ASONB serializer writes the document.
 fn encode_node(value: &AsonValue, ty: &Type) -> Result<AsonbValue<'static>> {
     Ok(match (value, ty) {
         (AsonValue::I32(value), Type::I32) => AsonbValue::I32(*value),
@@ -830,6 +970,11 @@ fn encode_node(value: &AsonValue, ty: &Type) -> Result<AsonbValue<'static>> {
     })
 }
 
+/// Reports whether a string can be emitted as an ASON identifier.
+///
+/// The first character must be a letter, underscore, or supported non-ASCII identifier character;
+/// later characters may also be ASCII digits. Reserved literals, special float names, and the
+/// `Option`/`Result` variant shorthands are not accepted as identifiers.
 fn is_valid_identifier(value: &str) -> bool {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
@@ -845,7 +990,18 @@ fn is_valid_identifier(value: &str) -> bool {
         && chars.all(|character| valid_start(character) || character.is_ascii_digit())
         && !matches!(
             value,
-            "true" | "false" | "NaN" | "NaN_f32" | "NaN_f64" | "Inf" | "Inf_f32" | "Inf_f64"
+            "true"
+                | "false"
+                | "NaN"
+                | "NaN_f32"
+                | "NaN_f64"
+                | "Inf"
+                | "Inf_f32"
+                | "Inf_f64"
+                | "Some"
+                | "None"
+                | "Ok"
+                | "Err"
         )
 }
 
@@ -854,6 +1010,7 @@ mod tests {
     use super::*;
 
     #[test]
+    /// Checks the special JSON encodings for maps, enums, options, bytes, dates, and floats.
     fn test_ason_to_json_mappings_and_non_finite_rejection() {
         let output = ason_to_json(r#"["first": 1 "second": 2]"#).unwrap();
         let value: JsonValue = serde_json::from_str(&output).unwrap();
@@ -866,6 +1023,16 @@ mod tests {
         assert_eq!(value["value"][0], "item");
         assert_eq!(value["value"][1], 42);
         assert_eq!(ason_to_json("Option::None").unwrap(), "null");
+        let output = ason_to_json("[Ok(1), Result::Err(\"failed\"), Some(2), None]").unwrap();
+        assert_eq!(
+            serde_json::from_str::<JsonValue>(&output).unwrap(),
+            serde_json::json!([
+                {"variant": "Ok", "value": 1},
+                {"variant": "Err", "value": "failed"},
+                2,
+                null
+            ])
+        );
         assert_eq!(ason_to_json("h\"00 ff\"").unwrap(), "\"AP8=\"");
         assert_eq!(
             ason_to_json("d\"2024-03-16T16:30:50+08:00\"").unwrap(),
@@ -876,6 +1043,7 @@ mod tests {
     }
 
     #[test]
+    /// Exercises numeric promotion and nested object, map, and optional schema inference.
     fn test_json_type_inference_and_nested_schemas() {
         let output = json_to_ason("[1, 2147483648]").unwrap();
         assert_eq!(
@@ -980,9 +1148,50 @@ mod tests {
         let bytes = json_to_asonb(r#"{"NaN": 1}"#).unwrap();
         let (schema, _) = asonb::de_value_from_slice(&bytes).unwrap();
         assert!(matches!(schema.root, Type::Map(_, _, _)));
+
+        // Variant shorthands are reserved and cannot be ASON Object keys.
+        for key in ["Some", "None", "Ok", "Err"] {
+            let input = format!(r#"{{"{key}": 1, "other": 2}}"#);
+            let output = json_to_ason(&input).unwrap();
+            assert!(matches!(
+                ason::de_value_from_str(&output).unwrap(),
+                AsonValue::Map(entries) if entries[0].0 == AsonValue::String(key.into())
+            ));
+        }
     }
 
     #[test]
+    /// Confirms a streamed `Result::Ok` List uses the Enumeration JSON object.
+    fn test_asonb_result_stream_to_json() {
+        for values in [vec![11, 13], vec![]] {
+            let mut bytes = Vec::new();
+            let mut writer = asonb::result_stream_writer::<i32, String, _>(&mut bytes)
+                .start_ok()
+                .unwrap();
+            writer.writes(&values).unwrap();
+            writer.end_list().unwrap();
+            let mut json = Vec::new();
+            asonb_reader_to_json(bytes.as_slice(), &mut json).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<JsonValue>(&json).unwrap(),
+                serde_json::json!({"variant": "Ok", "value": values})
+            );
+        }
+
+        let mut bytes = Vec::new();
+        asonb::result_stream_writer::<i32, String, _>(&mut bytes)
+            .write_err(&"failed".to_owned())
+            .unwrap();
+        let mut json = Vec::new();
+        asonb_reader_to_json(bytes.as_slice(), &mut json).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<JsonValue>(&json).unwrap(),
+            serde_json::json!({"variant": "Err", "value": "failed"})
+        );
+    }
+
+    #[test]
+    /// Confirms streamed ASONB list items form a valid JSON array.
     fn test_asonb_multichunk_list_streams_to_json() {
         let schema = DocumentSchema::new(Type::List(Encoding::MultiChunk, Box::new(Type::I32)));
         let value = AsonbValue::List(vec![

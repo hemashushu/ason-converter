@@ -10,9 +10,11 @@ use asonb::{DocumentSchema, Encoding, Type, Value};
 
 static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
-struct TempDirectory(PathBuf);
+/// Creates a unique temporary directory and removes it when dropped.
+struct TempDirectory(#[doc = "The temporary directory path used by the test."] PathBuf);
 
 impl TempDirectory {
+    /// Creates an empty directory unique to this test process.
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "ason-converter-{}-{}",
@@ -25,11 +27,13 @@ impl TempDirectory {
 }
 
 impl Drop for TempDirectory {
+    /// Removes the temporary directory and its contents after the test finishes.
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
 
+/// Runs one compiled CLI binary with the given arguments and piped standard input.
 fn invoke(binary: &str, args: &[&str], stdin: &[u8]) -> Output {
     let path = match binary {
         "ason2b" => env!("CARGO_BIN_EXE_ason2b"),
@@ -49,6 +53,7 @@ fn invoke(binary: &str, args: &[&str], stdin: &[u8]) -> Output {
 }
 
 #[test]
+/// Exercises stdin conversion, help/version output, shell completions, and parse failures.
 fn stdin_conversion_help_version_and_completion() {
     let output = invoke("ason2j", &["-r"], br#"{"name":"Ada","count":2}"#);
     assert_eq!(output.status.code(), Some(0));
@@ -101,6 +106,7 @@ fn stdin_conversion_help_version_and_completion() {
 }
 
 #[test]
+/// Checks extension-based format selection, binary round trips, and documented exit statuses.
 fn extension_detection_binary_round_trip_and_exit_statuses() {
     let directory = TempDirectory::new();
     let input_ason = directory.0.join("input.ason");
@@ -248,6 +254,7 @@ fn extension_detection_binary_round_trip_and_exit_statuses() {
 }
 
 #[test]
+/// Verifies a multi-chunk ASONB list is converted to JSON by the CLI.
 fn asonb_multichunk_cli_conversion_streams_to_json() {
     let directory = TempDirectory::new();
     let input = directory.0.join("stream.asonb");

@@ -4,6 +4,12 @@
 // the Mozilla Public License version 2.0 and additional exceptions.
 // For more details, see the LICENSE, LICENSE.additional, and CONTRIBUTING files.
 
+//! Convert values between ASON, ASONB, and JSON/JSONC.
+//!
+//! The conversion functions preserve the value structure where the target format allows it.
+//! JSON has fewer value types than ASON, so some ASON-specific values use documented JSON
+//! representations and values in JSON collections must share a compatible inferred type.
+
 mod ason_converter;
 mod json_converter;
 mod jsonc;

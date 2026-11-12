@@ -1,6 +1,6 @@
 # ASON Converter
 
-ASON Converter is a Rust library and a set of command-line tools for converting between ASON, ASONB (ASON's binary format), JSON, and JSONC.
+ASON Converter is a Rust library and a set of command-line tools (`ason2b`, `ason2j`) for converting between ASON, ASONB (ASON's binary format), JSON, and JSONC.
 
 <!-- @import "[TOC]" {cmd="toc" depthFrom=2 depthTo=4 orderedList=false} -->
 
@@ -15,6 +15,7 @@ ASON Converter is a Rust library and a set of command-line tools for converting 
     - [3.2.2 Maps](#322-maps)
     - [3.2.3 Enumerations](#323-enumerations)
     - [3.2.4 `Option`](#324-option)
+    - [3.2.5 `Result`](#325-result)
   - [3.3 Converting from JSON to ASON/ASONB](#33-converting-from-json-to-asonasonb)
     - [3.3.1 Numbers](#331-numbers)
     - [3.3.2 Arrays](#332-arrays)
@@ -42,17 +43,24 @@ ASON Converter is a Rust library and a set of command-line tools for converting 
 
 ## 2 Limitations
 
-- ASONB-to-ASON and ASONB-to-JSON conversions can stream only when the root value is a multi-chunk List. Conversion to ASONB cannot stream: ASON and JSON do not contain all the schema and type information ASONB requires, so the entire input must be read into memory first.
+- ASONB-to-ASON and ASONB-to-JSON conversions can stream only when the root value is a multi-chunk List, or a `Result::Ok` whose payload is a multi-chunk List (as produced by `result_stream_writer`). Conversion to ASONB cannot stream: ASON and JSON do not contain all the schema and type information ASONB requires, so the entire input must be read into memory first.
 - Comments in ASON and JSONC input are discarded.
 - ASONB stores DateTime values as UTC timestamps. Converting an ASON DateTime to ASONB and back loses the original UTC offset. Converting an ASONB DateTime to JSON produces a UTC date-time string.
 - Converting between JSON and ASON/ASONB may lose type information or numeric precision. A round trip may not reproduce the original document exactly.
-- JSON cannot preserve the distinction between Map and List, an Enumeration's type name, or the `Option::Some` wrapper.
+- JSON cannot preserve the distinction between Map and List, an Enumeration's type name, or the `Some` wrapper of an `Option`.
 
 ## 3 Conversion Rules
 
 ### 3.1 Converting between ASON and ASONB
 
 ASON and ASONB share the same data types and constraints, so conversion between them is generally straightforward. For details, see [Conversion to and from ASON](https://github.com/hemashushu/asonb#45-conversion-to-and-from-ason).
+
+The predefined enumerations `Option` and `Result` are supported in both their qualified (`Option::Some(1)`, `Result::Err("failed")`) and shorthand (`Some(1)`, `None`, `Ok(1)`, `Err("failed")`) forms. ASON output always uses the shorthand form.
+
+Because ASON text does not declare types, ASON-to-ASONB conversion infers the ASONB schema from the values. In a collection, all elements must have the same type, with these exceptions:
+
+- Enumeration values of the same type are merged, so `[Color::Red, Color::Green]` produces an enumeration type with both variants. A variant must have the same payload type everywhere it appears.
+- An `Option` or `Result` branch that never appears takes its type from sibling values, for example `[None, Some("a")]` is a List of `Option<String>` and `[Ok(1), Err("failed")]` is a List of `Result<i32, String>`. If a branch's type cannot be inferred, it defaults to `i32`.
 
 ### 3.2 Converting from ASON/ASONB to JSON
 
@@ -83,7 +91,8 @@ The table below summarizes how ASON/ASONB types map to JSON:
 | Object                                   | Object                          |
 | Map                                      | Array                           |
 | Enumeration                              | Object                          |
-| `Option::Some(value)` / `Option::None`   | `value` / `null`                |
+| `Some(value)` / `None`                   | `value` / `null`                |
+| `Ok(value)` / `Err(error)`               | Object (as an Enumeration)      |
 
 #### 3.2.1 Numbers
 
@@ -205,8 +214,17 @@ Variants whose payload is a single Tuple or Object use the same array or object 
 Options map to `null` for `None` and to the contained value for `Some(value)`:
 
 ```text
-Option::None -> null
-Option::Some(VALUE) -> VALUE
+None -> null
+Some(VALUE) -> VALUE
+```
+
+#### 3.2.5 `Result`
+
+Results are converted like other enumerations:
+
+```text
+Ok(VALUE) -> {"variant": "Ok", "value": VALUE}
+Err(ERROR) -> {"variant": "Err", "value": ERROR}
 ```
 
 ### 3.3 Converting from JSON to ASON/ASONB
@@ -286,6 +304,8 @@ For example:
 
 becomes an ASON/ASONB Object.
 
+The variant shorthands `Some`, `None`, `Ok`, and `Err` are reserved in ASON and are not treated as valid keys for an Object.
+
 If any key is not a valid identifier, the object becomes a Map only if all its values have the same ASON type after numeric promotion. Objects in a collection may be promoted to Maps to match other elements; see [Promoting Objects to Maps](#336-promoting-objects-to-maps).
 
 For example, the following object can be converted to a Map:
@@ -351,8 +371,28 @@ cargo install --path crates/ason-convert-cli
 NAME
     ason2b - Convert ASON to and from ASONB
 
-SYNOPSIS
-    ason2b [options] [INPUT] [-o OUTPUT]
+USAGE
+    ason2b [options] [INPUT]
+
+ARGUMENTS
+    INPUT                   Input file (defaults to standard input)
+
+OPTIONS
+    -t, --text              Force conversion from ASONB to ASON
+    -b, --binary            Force conversion from ASON to ASONB
+    -o, --output OUTPUT     Write output to this file (defaults to standard output)
+        --complete SHELL    Print a completion script to standard output
+                            Supported shells: bash, zsh, fish, PowerShell
+    -h, --help              Show help information
+    -V, --version           Show version information
+
+EXIT STATUS
+    0   Successful conversion
+    1   An error occurred during conversion
+    2   No conversion was performed
+    3   Input is ASONB while `-b` / `--binary` is specified
+    4   Input is ASON while `-t` / `--text` is specified
+    5   ASONB output is directed to a terminal
 
 DESCRIPTION
     The command determines the conversion direction from the input and output file names. If a file name does not identify the input format, it checks the input header. By default, it converts between ASON and ASONB in either direction.
@@ -362,26 +402,6 @@ DESCRIPTION
     If no input file is specified, input is read from standard input.
 
     If no output file is specified, output is written to standard output.
-
-OPTIONS
-    INPUT               Input file (defaults to standard input)
-    -t, --text          Force conversion from ASONB to ASON
-    -b, --binary        Force conversion from ASON to ASONB
-    -o OUTPUT           Write output to this file (defaults to standard output)
-    --complete SHELL    Print a completion script to standard output
-                        Supported shells: bash, zsh, fish, PowerShell
-    -h, --help          Show help information
-    --version           Show version information
-
-EXIT STATUS
-
-    The command exits with one of these status codes:
-    0   Successful conversion
-    1   An error occurred during conversion
-    2   No conversion was performed
-    3   Input is ASONB while `-b` / `--binary` is specified
-    4   Input is ASON while `-t` / `--text` is specified
-    5   ASONB output is directed to a terminal
 
 EXAMPLES
     * Convert an ASON file to ASONB
@@ -403,8 +423,29 @@ EXAMPLES
 NAME
     ason2j - Convert ASON/ASONB to and from JSON
 
-SYNOPSIS
-    ason2j [options] [INPUT] [-o OUTPUT]
+USAGE
+    ason2j [options] [INPUT]
+
+ARGUMENTS
+    INPUT                   Input file (defaults to standard input)
+
+OPTIONS
+    -r, --reverse           Treat input without a recognized extension as JSON
+    -t, --text              Select ASON output (the default for JSON input)
+    -b, --binary            Select ASONB output
+    -o, --output OUTPUT     Write output to this file (defaults to standard output)
+        --complete SHELL    Print a completion script to standard output
+                            Supported shells: bash, zsh, fish, PowerShell
+    -h, --help              Show help information
+    -V, --version           Show version information
+
+EXIT STATUS
+    0   Successful conversion
+    1   An error occurred during conversion
+    2   No conversion was performed
+    3   The output file has the `.ason` extension while `-b` / `--binary` is specified
+    4   The output file has the `.asonb` extension while `-t` / `--text` is specified
+    5   ASONB output is directed to a terminal
 
 DESCRIPTION
     The command determines the input and output formats from the file names. The extensions `.json` and `.jsonc` indicate JSON, `.ason` indicates ASON, and `.asonb` indicates ASONB. If the input has no recognized extension, the command checks its header for ASONB; otherwise, it treats the input as ASON. Use `-r` to treat input without a recognized extension as JSON.
@@ -414,26 +455,6 @@ DESCRIPTION
     If no input file is specified, input is read from standard input.
 
     If no output file is specified, output is written to standard output.
-
-OPTIONS
-    INPUT               Input file (defaults to standard input)
-    -r, --reverse       Treat input without a recognized extension as JSON
-    -t, --text          Select ASON output (the default for JSON input)
-    -b, --binary        Select ASONB output
-    -o OUTPUT           Write output to this file (defaults to standard output)
-    --complete SHELL    Print a completion script to standard output
-                        Supported shells: bash, zsh, fish, PowerShell
-    -h, --help          Show help information
-    --version           Show version information
-
-EXIT STATUS
-    The command exits with one of these status codes:
-    0   Successful conversion
-    1   An error occurred during conversion
-    2   No conversion was performed
-    3   The output file has the `.ason` extension while `-b` / `--binary` is specified
-    4   The output file has the `.asonb` extension while `-t` / `--text` is specified
-    5   ASONB output is directed to a terminal
 
 EXAMPLES
     * Convert an ASON or ASONB file to JSON
@@ -475,7 +496,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-For JSON or JSONC input, use `json_to_ason` or `json_to_asonb`. `format_json` parses JSONC, removes comments, and returns formatted JSON. `asonb_to_json` converts a complete ASONB document. The reader functions `asonb_reader_to_ason` and `asonb_reader_to_json` accept `Read`/`Write` streams and stream only when the root value is a multi-chunk List.
+For JSON or JSONC input, use `json_to_ason` or `json_to_asonb`. `format_json` parses JSONC, removes comments, and returns formatted JSON. `asonb_to_json` converts a complete ASONB document. The reader functions `asonb_reader_to_ason` and `asonb_reader_to_json` accept `Read`/`Write` streams and stream only when the root value is a multi-chunk List or a `Result::Ok` containing a multi-chunk List.
 
 The `ason-convert` library is separate from `ason-convert-cli`, so depending on it does not add the CLI's `clap` dependencies. Its ASON and ASONB dependencies currently use local absolute paths. To build it outside this development environment, those dependencies must first be changed to portable Git or registry references.
 

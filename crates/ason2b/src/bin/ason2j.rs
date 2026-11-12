@@ -4,6 +4,7 @@
 // the Mozilla Public License version 2.0 and additional exceptions.
 // For more details, see the LICENSE, LICENSE.additional, and CONTRIBUTING files.
 
+/// Starts the ASON/ASONB/JSON command-line converter.
 fn main() -> std::process::ExitCode {
-    ason_convert_cli::run_ason2b()
+    ason2b::run_ason2j()
 }
