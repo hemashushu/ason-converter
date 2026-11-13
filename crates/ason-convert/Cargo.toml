@@ -1,6 +1,6 @@
 [package]
 name = "ason-convert"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2024"
 
 license-file = "LICENSE.additional"
@@ -11,8 +11,8 @@ keywords = ["ason", "asonb", "json", "jsonc", "converter"]
 categories = ["encoding", "parsing"]
 
 [dependencies]
-ason = { path = "../../../ason", version = "4.0.0" }
-asonb = { path = "../../../asonb/crates/asonb", version = "4.0.0" }
+ason = { path = "../../../ason", version = "4.1.0" }
+asonb = { path = "../../../asonb/crates/asonb", version = "4.1.0" }
 base64 = "0.23"
 chrono = "0.4"
 serde = "1.0"

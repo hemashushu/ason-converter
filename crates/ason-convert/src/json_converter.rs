@@ -1040,8 +1040,8 @@ fn encode_node(value: &AsonValue, ty: &Type) -> Result<AsonbValue<'static>> {
 /// Reports whether a string can be emitted as an ASON identifier.
 ///
 /// The first character must be a letter, underscore, or supported non-ASCII identifier character;
-/// later characters may also be ASCII digits. Reserved literals, special float names, and the
-/// `Option`/`Result` variant shorthands are not accepted as identifiers.
+/// later characters may also be ASCII digits. Reserved literals and special float names are not
+/// accepted as identifiers; the `Option`/`Result` variant shorthands are ordinary identifiers.
 fn is_valid_identifier(value: &str) -> bool {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
@@ -1065,10 +1065,6 @@ fn is_valid_identifier(value: &str) -> bool {
                 | "Inf"
                 | "Inf_f32"
                 | "Inf_f64"
-                | "Some"
-                | "None"
-                | "Ok"
-                | "Err"
         )
 }
 
@@ -1216,14 +1212,17 @@ mod tests {
         let (schema, _) = asonb::de_value_from_slice(&bytes).unwrap();
         assert!(matches!(schema.root, Type::Map(_, _, _)));
 
-        // Variant shorthands are reserved and cannot be ASON Object keys.
+        // Variant shorthands are ordinary identifiers and can be ASON Object keys.
         for key in ["Some", "None", "Ok", "Err"] {
             let input = format!(r#"{{"{key}": 1, "other": 2}}"#);
             let output = json_to_ason(&input).unwrap();
             assert!(matches!(
                 ason::de_value_from_str(&output).unwrap(),
-                AsonValue::Map(entries) if entries[0].0 == AsonValue::String(key.into())
+                AsonValue::Object(fields) if fields[0].0 == key
             ));
+            let bytes = json_to_asonb(&input).unwrap();
+            let (schema, _) = asonb::de_value_from_slice(&bytes).unwrap();
+            assert!(matches!(schema.root, Type::Object(_)));
         }
     }
 

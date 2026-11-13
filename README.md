@@ -305,7 +305,7 @@ For example:
 
 becomes an ASON/ASONB Object.
 
-The variant shorthands `Some`, `None`, `Ok`, and `Err` are reserved in ASON and are not treated as valid keys for an Object.
+The ASON keywords `true`, `false`, `NaN`, `NaN_f32`, `NaN_f64`, `Inf`, `Inf_f32`, and `Inf_f64` are reserved and are not treated as valid keys for an Object. The variant shorthands `Some`, `None`, `Ok`, and `Err` are ordinary identifiers and can be Object keys.
 
 If any key is not a valid identifier, the object becomes a Map only if all its values have the same ASON type after numeric promotion. Objects in a collection may be promoted to Maps to match other elements; see [Promoting Objects to Maps](#336-promoting-objects-to-maps).
 
