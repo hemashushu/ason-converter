@@ -64,6 +64,8 @@ dependencies = [
 [[package]]
 name = "ason"
 version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6f05ec444661653b1bc0a51d746256f279b9b9100013afc39a163421b7a2550"
 dependencies = [
  "chrono",
  "hexfloat2",
@@ -106,6 +108,8 @@ dependencies = [
 [[package]]
 name = "asonb"
 version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9072dd9025610a31e103d234166cef960b7c0860f1ac4463a690d32951ca281"
 dependencies = [
  "asonb-derive",
  "chrono",
@@ -116,6 +120,8 @@ dependencies = [
 [[package]]
 name = "asonb-derive"
 version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b5decb6f4ea79274c937ff0681637372a7a3da529e3c3444d19966560d38dc7"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
