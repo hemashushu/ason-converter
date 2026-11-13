@@ -4,18 +4,15 @@ version = "1.1.0"
 edition = "2024"
 
 license-file = "LICENSE.additional"
-description = "Command-line tools for converting between ASON, ASONB, JSON, and JSONC."
+description = "Command-line tool for converting between ASON and ASONB."
 homepage = "https://github.com/hemashushu/ason-converter"
 repository = "https://github.com/hemashushu/ason-converter"
 readme = "../../README.md"
-keywords = ["ason", "asonb", "json", "jsonc", "converter"]
+keywords = ["ason", "asonb", "converter", "cli"]
 categories = ["command-line-utilities", "encoding", "parsing"]
 
 [dependencies]
-ason-convert = { path = "../ason-convert" }
+ason-convert = { path = "../ason-convert", version = "1.1.0" }
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
 
-[dev-dependencies]
-asonb = { path = "../../../asonb/crates/asonb", version = "3.6" }
-serde_json = "1.0"

@@ -29,6 +29,7 @@ ASON Converter is a Rust library and a set of command-line tools (`ason2b`, `aso
     - [4.2.1 `ason2b`](#421-ason2b)
     - [4.2.2 `ason2j`](#422-ason2j)
 - [5 Library Usage](#5-library-usage)
+  - [5.1 Publishing the Workspace](#51-publishing-the-workspace)
 - [6 Links](#6-links)
 - [7 License](#7-license)
 
@@ -353,14 +354,15 @@ The Object is promoted to a Map, and `1` is promoted to `i64`. The result is a L
 
 ## 4 Command-Line Tools
 
-The `ason-convert-cli` package provides two commands: `ason2b` converts between ASON and ASONB, and `ason2j` converts between ASON/ASONB and JSON.
+Two command-line tools are provided, each in its own package: `ason2b` converts between ASON and ASONB, and `ason2j` converts between ASON/ASONB and JSON.
 
 ### 4.1 Installation
 
 From the workspace root, install the CLI tools with Cargo:
 
 ```sh
-cargo install --path crates/ason-convert-cli
+cargo install --path crates/ason2b
+cargo install --path crates/ason2j
 ```
 
 ### 4.2 Commands
@@ -498,7 +500,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 For JSON or JSONC input, use `json_to_ason` or `json_to_asonb`. `format_json` parses JSONC, removes comments, and returns formatted JSON. `asonb_to_json` converts a complete ASONB document. The reader functions `asonb_reader_to_ason` and `asonb_reader_to_json` accept `Read`/`Write` streams and stream only when the root value is a multi-chunk List or a `Result::Ok` containing a multi-chunk List.
 
-The `ason-convert` library is separate from `ason-convert-cli`, so depending on it does not add the CLI's `clap` dependencies. Its ASON and ASONB dependencies currently use local absolute paths. To build it outside this development environment, those dependencies must first be changed to portable Git or registry references.
+The `ason-convert` library is separate from the `ason2b` and `ason2j` packages, so depending on it does not add the CLI's `clap` dependencies. Its ASON and ASONB dependencies are resolved from crates.io.
+
+### 5.1 Publishing the Workspace
+
+The [Publish to crates.io](.github/workflows/public.yml) workflow is triggered manually from GitHub Actions. It tests and packages the entire workspace with the lockfile, then publishes `ason-convert`, `ason2b`, and `ason2j` in dependency order. Versions already published to crates.io are skipped.
+
+The workflow uses crates.io trusted publishing (OIDC). Configure a trusted publisher for each crate with the repository `hemashushu/ason-converter` and the workflow filename `public.yml` before running it. No long-lived registry token is stored in GitHub secrets.
 
 ## 6 Links
 

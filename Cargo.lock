@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "ason"
-version = "3.6.0"
+version = "3.6.1"
 dependencies = [
  "chrono",
  "hexfloat2",
@@ -88,6 +88,15 @@ name = "ason2b"
 version = "1.1.0"
 dependencies = [
  "ason-convert",
+ "clap",
+ "clap_complete",
+]
+
+[[package]]
+name = "ason2j"
+version = "1.1.0"
+dependencies = [
+ "ason-convert",
  "asonb",
  "clap",
  "clap_complete",
@@ -96,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "asonb"
-version = "3.6.0"
+version = "3.6.1"
 dependencies = [
  "asonb-derive",
  "chrono",

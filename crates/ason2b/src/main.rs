@@ -4,6 +4,8 @@
 // the Mozilla Public License version 2.0 and additional exceptions.
 // For more details, see the LICENSE, LICENSE.additional, and CONTRIBUTING files.
 
+//! The `ason2b` command-line converter for ASON/ASONB documents.
+
 use std::{
     fs::File,
     io::{self, BufWriter, Cursor, IsTerminal, Read, Write},
@@ -14,19 +16,16 @@ use std::{
 use clap::{CommandFactory, Parser, error::ErrorKind};
 use clap_complete::{Shell, generate};
 
-use ason_convert::{
-    ason_to_asonb, ason_to_json, asonb_reader_to_ason, asonb_reader_to_json, format_json,
-    json_to_ason, json_to_asonb,
-};
+use ason_convert::{ason_to_asonb, asonb_reader_to_ason};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-/// A format recognized by the command-line converters.
+/// A format recognized by the command-line converter.
 enum Format {
     /// Human-readable ASON text.
     Ason,
     /// Binary ASONB document data.
     Asonb,
-    /// JSON or JSONC text.
+    /// JSON or JSONC text, which is recognized only so it can be rejected.
     Json,
 }
 
@@ -110,67 +109,12 @@ struct Ason2bArgs {
     complete: Option<String>,
 }
 
-#[derive(Parser)]
-#[command(
-    name = "ason2j",
-    version,
-    about = "Convert ASON/ASONB to and from JSON"
-)]
-/// Arguments accepted by the `ason2j` command.
-struct Ason2jArgs {
-    /// Optional input file; standard input is used when this is omitted.
-    #[arg(value_name = "INPUT", help = "Input file (defaults to standard input)")]
-    input: Option<PathBuf>,
-
-    /// Treats input with no recognized extension as JSON or JSONC.
-    #[arg(
-        short = 'r',
-        long = "reverse",
-        help = "Treat input without a recognized extension as JSON"
-    )]
-    reverse: bool,
-
-    /// Selects ASON text output; by default, JSON input is converted to ASON.
-    #[arg(
-        short = 't',
-        long = "text",
-        conflicts_with = "binary",
-        help = "Select ASON output (the default for JSON input)"
-    )]
-    text: bool,
-
-    /// Selects ASONB binary output.
-    #[arg(
-        short = 'b',
-        long = "binary",
-        conflicts_with = "text",
-        help = "Select ASONB output"
-    )]
-    binary: bool,
-
-    /// Optional output file; standard output is used when this is omitted.
-    #[arg(
-        short = 'o',
-        value_name = "OUTPUT",
-        help = "Write output to this file (defaults to standard output)"
-    )]
-    output: Option<PathBuf>,
-
-    /// Prints a shell completion script instead of converting a document.
-    #[arg(
-        long = "complete",
-        value_name = "SHELL",
-        help = "Print a completion script to standard output (bash, zsh, fish, or PowerShell)"
-    )]
-    complete: Option<String>,
-}
-
 /// Parses arguments and runs the `ason2b` command-line application.
 ///
 /// Conversion errors are printed to standard error and returned as process exit codes. A
 /// successful completion-script request intentionally returns status code 2 for compatibility
 /// with this command's existing behavior.
-pub fn run_ason2b() -> ExitCode {
+fn main() -> ExitCode {
     let args = match parse_args::<Ason2bArgs>() {
         Ok(args) => args,
         Err(code) => return ExitCode::from(code),
@@ -182,28 +126,6 @@ pub fn run_ason2b() -> ExitCode {
         };
     }
     match run_ason2b_command(args) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => report_error(error),
-    }
-}
-
-/// Parses arguments and runs the `ason2j` command-line application.
-///
-/// Conversion errors are printed to standard error and returned as process exit codes. A
-/// successful completion-script request intentionally returns status code 2 for compatibility
-/// with this command's existing behavior.
-pub fn run_ason2j() -> ExitCode {
-    let args = match parse_args::<Ason2jArgs>() {
-        Ok(args) => args,
-        Err(code) => return ExitCode::from(code),
-    };
-    if let Some(shell) = args.complete {
-        return match emit_completion::<Ason2jArgs>(&shell, "ason2j") {
-            Ok(()) => ExitCode::from(2),
-            Err(error) => report_error(error),
-        };
-    }
-    match run_ason2j_command(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => report_error(error),
     }
@@ -271,7 +193,7 @@ fn run_ason2b_command(args: Ason2bArgs) -> CliResult<()> {
         ));
     }
 
-    let output_extension = args.output.as_deref().and_then(ason2b_extension_format);
+    let output_extension = args.output.as_deref().and_then(output_extension_format);
     if args.force_text && output_extension == Some(Format::Asonb) {
         return Err(CliError::new(1, "-t conflicts with an .asonb output path."));
     }
@@ -315,122 +237,6 @@ fn run_ason2b_command(args: Ason2bArgs) -> CliResult<()> {
     Ok(())
 }
 
-/// Determines the source and destination formats, then runs the requested ASON/ASONB/JSON conversion.
-///
-/// A recognized input extension takes precedence over the `-r` fallback and header detection.
-/// For inputs without a recognized extension, `-r` selects JSON; otherwise the ASONB signature
-/// selects binary input and text is treated as ASON. The output mode, output extension, and
-/// explicit flags are checked for conflicts before processing begins.
-fn run_ason2j_command(args: Ason2jArgs) -> CliResult<()> {
-    let input = open_input(args.input.as_deref())?;
-    let extension_format = input.extension_format;
-    let source = extension_format.unwrap_or({
-        if args.reverse {
-            Format::Json
-        } else if input.has_binary_header {
-            Format::Asonb
-        } else {
-            Format::Ason
-        }
-    });
-    if args.reverse && source != Format::Json {
-        return Err(CliError::new(1, "-r requires JSON or JSONC input."));
-    }
-
-    let output_extension = args.output.as_deref().and_then(ason2j_extension_format);
-    if args.text && output_extension == Some(Format::Asonb) {
-        return Err(CliError::new(
-            4,
-            "The output file name is .asonb while -t/--text was specified.",
-        ));
-    }
-    if args.binary && output_extension == Some(Format::Ason) {
-        return Err(CliError::new(
-            3,
-            "The output file name is .ason while -b/--binary was specified.",
-        ));
-    }
-    if args.text && output_extension.is_some_and(|format| format != Format::Ason) {
-        return Err(CliError::new(
-            1,
-            "-t/--text conflicts with the selected output extension.",
-        ));
-    }
-    if args.binary && output_extension.is_some_and(|format| format != Format::Asonb) {
-        return Err(CliError::new(
-            1,
-            "-b conflicts with the selected output extension.",
-        ));
-    }
-    let destination = if args.binary {
-        Format::Asonb
-    } else if args.text {
-        Format::Ason
-    } else if let Some(format) = output_extension {
-        format
-    } else if args.reverse {
-        Format::Ason
-    } else {
-        Format::Json
-    };
-    if args.binary && destination != Format::Asonb {
-        return Err(CliError::new(
-            1,
-            "-b conflicts with the selected output format.",
-        ));
-    }
-    if source == destination {
-        return Err(CliError::new(2, "No conversion was performed."));
-    }
-    let (mut output, output_is_terminal) = output_writer(args.output.as_deref())?;
-    if let Some(error) = binary_terminal_write_error(destination, output_is_terminal) {
-        return Err(error);
-    }
-    match (source, destination) {
-        (Format::Ason, Format::Json) => {
-            let input = read_all(input.reader)?;
-            let text =
-                std::str::from_utf8(&input).map_err(|error| CliError::new(1, error.to_string()))?;
-            output.write_all(&ason_to_json(text).map_err(conversion_error)?.into_bytes())?;
-        }
-        (Format::Asonb, Format::Json) => {
-            asonb_reader_to_json(input.reader, &mut output).map_err(conversion_error)?;
-        }
-        (Format::Json, Format::Ason) => {
-            let input = read_all(input.reader)?;
-            let text =
-                std::str::from_utf8(&input).map_err(|error| CliError::new(1, error.to_string()))?;
-            output.write_all(json_to_ason(text).map_err(conversion_error)?.as_bytes())?;
-        }
-        (Format::Json, Format::Asonb) => {
-            let input = read_all(input.reader)?;
-            let text =
-                std::str::from_utf8(&input).map_err(|error| CliError::new(1, error.to_string()))?;
-            output.write_all(&json_to_asonb(text).map_err(conversion_error)?)?;
-        }
-        (Format::Json, Format::Json) => {
-            let input = read_all(input.reader)?;
-            let text =
-                std::str::from_utf8(&input).map_err(|error| CliError::new(1, error.to_string()))?;
-            output.write_all(format_json(text).map_err(conversion_error)?.as_bytes())?;
-        }
-        (Format::Asonb, Format::Ason) => {
-            asonb_reader_to_ason(input.reader, &mut output).map_err(conversion_error)?;
-        }
-        (Format::Ason, Format::Asonb) => {
-            let input = read_all(input.reader)?;
-            let text =
-                std::str::from_utf8(&input).map_err(|error| CliError::new(1, error.to_string()))?;
-            output.write_all(&ason_to_asonb(text).map_err(conversion_error)?)?;
-        }
-        (Format::Asonb, Format::Asonb) | (Format::Ason, Format::Ason) => {
-            return Err(CliError::new(2, "No conversion was performed."));
-        }
-    }
-    output.flush()?;
-    Ok(())
-}
-
 /// Returns an error when binary ASONB data would be written directly to a terminal.
 fn binary_terminal_write_error(destination: Format, output_is_terminal: bool) -> Option<CliError> {
     (destination == Format::Asonb && output_is_terminal)
@@ -442,7 +248,7 @@ fn binary_terminal_write_error(destination: Format, output_is_terminal: bool) ->
 /// At most the first eight bytes are read for signature detection. Those bytes are chained back
 /// in front of the remaining reader so downstream parsers receive the original complete input.
 fn open_input(path: Option<&Path>) -> CliResult<InputSource> {
-    let extension_format = path.and_then(ason2j_extension_format);
+    let extension_format = path.and_then(input_extension_format);
     let mut source: Box<dyn Read> = match path {
         Some(path) => Box::new(File::open(path)?),
         None => Box::new(io::stdin()),
@@ -467,8 +273,8 @@ fn open_input(path: Option<&Path>) -> CliResult<InputSource> {
     })
 }
 
-/// Infers an ASON or ASONB format from an `ason2b` input or output path extension.
-fn ason2b_extension_format(path: &Path) -> Option<Format> {
+/// Infers an ASON or ASONB format from an output path extension.
+fn output_extension_format(path: &Path) -> Option<Format> {
     match path.extension()?.to_str()? {
         "ason" => Some(Format::Ason),
         "asonb" => Some(Format::Asonb),
@@ -476,8 +282,8 @@ fn ason2b_extension_format(path: &Path) -> Option<Format> {
     }
 }
 
-/// Infers an ASON, ASONB, JSON, or JSONC format from a path extension.
-fn ason2j_extension_format(path: &Path) -> Option<Format> {
+/// Infers an input format from a path extension, recognizing JSON so it can be rejected.
+fn input_extension_format(path: &Path) -> Option<Format> {
     match path.extension()?.to_str()? {
         "ason" => Some(Format::Ason),
         "asonb" => Some(Format::Asonb),
@@ -527,7 +333,7 @@ fn report_error(error: CliError) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ason2bArgs, Ason2jArgs, Format, binary_terminal_write_error};
+    use super::{Ason2bArgs, Format, binary_terminal_write_error};
     use clap::Parser;
 
     #[test]
@@ -548,23 +354,6 @@ mod tests {
         assert!(binary_short.force_binary);
 
         assert!(Ason2bArgs::try_parse_from(["ason2b", "-t", "-b"]).is_err());
-    }
-
-    #[test]
-    /// Checks `ason2j` mode parsing, including the mutually exclusive output flags.
-    fn ason2j_reverse_text_and_binary_flags_are_parsed_and_exclusive() {
-        assert!(
-            Ason2jArgs::try_parse_from(["ason2j", "--reverse"])
-                .unwrap()
-                .reverse
-        );
-        assert!(Ason2jArgs::try_parse_from(["ason2j", "-t"]).unwrap().text);
-        assert!(
-            Ason2jArgs::try_parse_from(["ason2j", "--binary"])
-                .unwrap()
-                .binary
-        );
-        assert!(Ason2jArgs::try_parse_from(["ason2j", "-t", "-b"]).is_err());
     }
 
     #[test]

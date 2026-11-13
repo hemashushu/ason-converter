@@ -12,8 +12,8 @@ keywords = ["ason", "asonb", "json", "jsonc", "converter"]
 categories = ["encoding", "parsing"]
 
 [dependencies]
-ason = { path = "../../../ason", version = "3.6.0" }
-asonb = { path = "../../../asonb/crates/asonb", version = "3.6.0" }
+ason = { path = "../../../ason", version = "3.6.1" }
+asonb = { path = "../../../asonb/crates/asonb", version = "3.6.1" }
 base64 = "0.23"
 chrono = "0.4"
 serde = "1.0"
