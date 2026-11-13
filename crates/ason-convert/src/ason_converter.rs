@@ -11,7 +11,10 @@ use std::{
 };
 
 use ason::{Value as AsonValue, VariantValue};
-use asonb::{DocumentSchema, Encoding, Field, Type, Value as AsonbValue, Variant};
+use asonb::{
+    DocumentSchema, Encoding, Field, Type, Value as AsonbValue, Variant,
+    VariantValue as AsonbVariantValue,
+};
 use chrono::{DateTime, Utc};
 
 #[derive(Debug)]
@@ -181,7 +184,20 @@ fn infer_type(value: &AsonValue) -> Result<Type> {
         AsonValue::Tuple(values) => {
             Type::Tuple(values.iter().map(infer_type).collect::<Result<_>>()?)
         }
-        AsonValue::Object(fields) => Type::Object(String::new(), infer_fields(fields)?),
+        AsonValue::Object(fields) => Type::Object(infer_fields(fields)?),
+        AsonValue::Enumeration {
+            name,
+            variant,
+            payload,
+        } if name == "Option" => match (variant.as_str(), payload) {
+            ("None", VariantValue::Unit) => option_type(UNKNOWN),
+            ("Some", VariantValue::Newtype(value)) => option_type(infer_type(value)?),
+            _ => {
+                return Err(ConversionError(
+                    "Expect \"Option::None\" or \"Option::Some(...)\".".into(),
+                ));
+            }
+        },
         AsonValue::Enumeration {
             name,
             variant,
@@ -223,8 +239,6 @@ fn infer_type(value: &AsonValue) -> Result<Type> {
             };
             Type::Enum(name.clone(), vec![variant])
         }
-        AsonValue::Option(None) => option_type(UNKNOWN),
-        AsonValue::Option(Some(value)) => option_type(infer_type(value)?),
     })
 }
 
@@ -292,8 +306,8 @@ fn unify_types(left: Type, right: Type) -> Result<Type> {
                 .map(|(left, right)| unify_types(left, right))
                 .collect::<Result<_>>()?,
         ),
-        (Type::Object(name, left), Type::Object(_, right)) => {
-            Type::Object(name, unify_fields(left, right).ok_or_else(mismatch)??)
+        (Type::Object(left), Type::Object(right)) => {
+            Type::Object(unify_fields(left, right).ok_or_else(mismatch)??)
         }
         (Type::Enum(name, mut variants), Type::Enum(right_name, right_variants))
             if name == right_name =>
@@ -367,7 +381,7 @@ fn finalize_type(ty: Type) -> Type {
             Box::new(finalize_type(*value)),
         ),
         Type::Tuple(types) => Type::Tuple(types.into_iter().map(finalize_type).collect()),
-        Type::Object(name, fields) => Type::Object(name, finalize_fields(fields)),
+        Type::Object(fields) => Type::Object(finalize_fields(fields)),
         Type::Enum(name, variants) => Type::Enum(
             name,
             variants
@@ -434,7 +448,7 @@ fn encode_value(value: &AsonValue, ty: &Type) -> Result<AsonbValue<'static>> {
                     .collect::<Result<_>>()?,
             )
         }
-        (AsonValue::Object(values), Type::Object(_, fields)) if values.len() == fields.len() => {
+        (AsonValue::Object(values), Type::Object(fields)) if values.len() == fields.len() => {
             AsonbValue::Object(encode_fields(values, fields)?)
         }
         (
@@ -445,12 +459,14 @@ fn encode_value(value: &AsonValue, ty: &Type) -> Result<AsonbValue<'static>> {
         ) => {
             let (index, variant) = find_variant(variants, variant).ok_or_else(mismatch)?;
             let payload = match (payload, variant) {
-                (VariantValue::Unit, Variant::Unit(_)) => AsonbValue::Tuple(Vec::new()),
-                (VariantValue::Newtype(value), Variant::Newtype(_, ty)) => encode_value(value, ty)?,
+                (VariantValue::Unit, Variant::Unit(_)) => AsonbVariantValue::Unit,
+                (VariantValue::Newtype(value), Variant::Newtype(_, ty)) => {
+                    AsonbVariantValue::Newtype(Box::new(encode_value(value, ty)?))
+                }
                 (VariantValue::Tuple(values), Variant::Tuple(_, types))
                     if values.len() == types.len() =>
                 {
-                    AsonbValue::Tuple(
+                    AsonbVariantValue::Tuple(
                         values
                             .iter()
                             .zip(types)
@@ -461,21 +477,11 @@ fn encode_value(value: &AsonValue, ty: &Type) -> Result<AsonbValue<'static>> {
                 (VariantValue::Struct(values), Variant::Struct(_, fields))
                     if values.len() == fields.len() =>
                 {
-                    AsonbValue::Object(encode_fields(values, fields)?)
+                    AsonbVariantValue::Struct(encode_fields(values, fields)?)
                 }
                 _ => return Err(mismatch()),
             };
-            AsonbValue::Enum(index, Box::new(payload))
-        }
-        (AsonValue::Option(None), Type::Enum(_, variants)) => {
-            let (index, _) = find_variant(variants, "None").ok_or_else(mismatch)?;
-            AsonbValue::Enum(index, Box::new(AsonbValue::Tuple(Vec::new())))
-        }
-        (AsonValue::Option(Some(value)), Type::Enum(_, variants)) => {
-            let Some((index, Variant::Newtype(_, ty))) = find_variant(variants, "Some") else {
-                return Err(mismatch());
-            };
-            AsonbValue::Enum(index, Box::new(encode_value(value, ty)?))
+            AsonbValue::Enumeration { index, payload }
         }
         _ => return Err(mismatch()),
     })
@@ -560,7 +566,7 @@ pub(crate) fn from_asonb_value(
                     .collect::<Result<_>>()?,
             )
         }
-        (Type::Object(_, fields), AsonbValue::Object(values)) if fields.len() == values.len() => {
+        (Type::Object(fields), AsonbValue::Object(values)) if fields.len() == values.len() => {
             AsonValue::Object(
                 fields
                     .iter()
@@ -574,63 +580,48 @@ pub(crate) fn from_asonb_value(
                     .collect::<Result<_>>()?,
             )
         }
-        (Type::Enum(name, variants), AsonbValue::Enum(index, payload)) => {
+        (Type::Enum(name, variants), AsonbValue::Enumeration { index, payload }) => {
             let variant = variants.get(*index as usize).ok_or_else(mismatch)?;
-            if name == "Option" {
-                match (variant, payload.as_ref()) {
-                    (Variant::Unit(variant), _) if variant == "None" => AsonValue::Option(None),
-                    (Variant::Newtype(variant, ty), value) if variant == "Some" => {
-                        AsonValue::Option(Some(Box::new(from_asonb_value(schema, ty, value)?)))
-                    }
-                    _ => return Err(mismatch()),
+            let payload = match (variant, payload) {
+                (Variant::Unit(_), AsonbVariantValue::Unit) => VariantValue::Unit,
+                (Variant::Newtype(_, ty), AsonbVariantValue::Newtype(value)) => {
+                    VariantValue::Newtype(Box::new(from_asonb_value(schema, ty, value)?))
                 }
-            } else {
-                let payload = match variant {
-                    Variant::Unit(_) => VariantValue::Unit,
-                    Variant::Newtype(_, ty) => {
-                        VariantValue::Newtype(Box::new(from_asonb_value(schema, ty, payload)?))
+                (Variant::Tuple(_, types), AsonbVariantValue::Tuple(values)) => {
+                    if types.len() != values.len() {
+                        return Err(mismatch());
                     }
-                    Variant::Tuple(_, types) => {
-                        let AsonbValue::Tuple(values) = payload.as_ref() else {
-                            return Err(mismatch());
-                        };
-                        if types.len() != values.len() {
-                            return Err(mismatch());
-                        }
-                        VariantValue::Tuple(
-                            types
-                                .iter()
-                                .zip(values)
-                                .map(|(ty, value)| from_asonb_value(schema, ty, value))
-                                .collect::<Result<_>>()?,
-                        )
-                    }
-                    Variant::Struct(_, fields) => {
-                        let AsonbValue::Object(values) = payload.as_ref() else {
-                            return Err(mismatch());
-                        };
-                        if fields.len() != values.len() {
-                            return Err(mismatch());
-                        }
-                        VariantValue::Struct(
-                            fields
-                                .iter()
-                                .zip(values)
-                                .map(|(field, value)| {
-                                    Ok((
-                                        field.name.clone(),
-                                        from_asonb_value(schema, &field.ty, value)?,
-                                    ))
-                                })
-                                .collect::<Result<_>>()?,
-                        )
-                    }
-                };
-                AsonValue::Enumeration {
-                    name,
-                    variant: variant.name().into(),
-                    payload,
+                    VariantValue::Tuple(
+                        types
+                            .iter()
+                            .zip(values)
+                            .map(|(ty, value)| from_asonb_value(schema, ty, value))
+                            .collect::<Result<_>>()?,
+                    )
                 }
+                (Variant::Struct(_, fields), AsonbVariantValue::Struct(values)) => {
+                    if fields.len() != values.len() {
+                        return Err(mismatch());
+                    }
+                    VariantValue::Struct(
+                        fields
+                            .iter()
+                            .zip(values)
+                            .map(|(field, value)| {
+                                Ok((
+                                    field.name.clone(),
+                                    from_asonb_value(schema, &field.ty, value)?,
+                                ))
+                            })
+                            .collect::<Result<_>>()?,
+                    )
+                }
+                _ => return Err(mismatch()),
+            };
+            AsonValue::Enumeration {
+                name,
+                variant: variant.name().into(),
+                payload,
             }
         }
         _ => return Err(mismatch()),
@@ -690,7 +681,7 @@ mod tests {
 }"#;
         let encoded = ason_to_asonb(input).unwrap();
         let (schema, _) = asonb::de_value_from_slice(&encoded).unwrap();
-        let Type::Object(_, fields) = &schema.root else {
+        let Type::Object(fields) = &schema.root else {
             panic!("expected root Object schema");
         };
         let Type::List(_, result_type) = &fields[2].ty else {

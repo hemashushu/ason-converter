@@ -10,7 +10,10 @@ use std::{
 };
 
 use ason::{Value as AsonValue, VariantValue};
-use asonb::{DocumentSchema, Encoding, Field, Type, Value as AsonbValue, Variant};
+use asonb::{
+    DocumentSchema, Encoding, Field, Type, Value as AsonbValue, Variant,
+    VariantValue as AsonbVariantValue,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::SecondsFormat;
 use serde_json::{Map, Number, Value as JsonValue};
@@ -220,6 +223,10 @@ fn ason_value_to_json(value: &AsonValue) -> Result<JsonValue> {
                 })
                 .collect::<Result<_>>()?,
         ),
+        AsonValue::Enumeration { name, payload, .. } if name == "Option" => match payload {
+            VariantValue::Newtype(value) => ason_value_to_json(value)?,
+            _ => JsonValue::Null,
+        },
         AsonValue::Enumeration {
             variant, payload, ..
         } => {
@@ -251,8 +258,6 @@ fn ason_value_to_json(value: &AsonValue) -> Result<JsonValue> {
             }
             JsonValue::Object(object)
         }
-        AsonValue::Option(None) => JsonValue::Null,
-        AsonValue::Option(Some(value)) => ason_value_to_json(value)?,
     };
     Ok(json)
 }
@@ -381,13 +386,13 @@ fn convert_array(values: Vec<JsonInput>) -> Result<Node> {
     if contains_null {
         let value_nodes = nodes
             .iter()
-            .filter_map(|node| match &node.value {
-                AsonValue::Option(None) => None,
-                AsonValue::Option(Some(value)) => Some(Node {
-                    value: (**value).clone(),
+            .filter_map(|node| match as_option(&node.value) {
+                Some(None) => None,
+                Some(Some(value)) => Some(Node {
+                    value: value.clone(),
                     ty: option_inner_type(&node.ty).unwrap_or(Type::I32),
                 }),
-                _ => Some(node.clone()),
+                None => Some(node.clone()),
             })
             .collect::<Vec<_>>();
         let inner_type = if value_nodes.is_empty() {
@@ -396,13 +401,13 @@ fn convert_array(values: Vec<JsonInput>) -> Result<Node> {
             unify_nodes(&value_nodes)?.0
         };
         for node in &mut nodes {
-            match &node.value {
-                AsonValue::Option(None) => *node = option_none(inner_type.clone()),
-                AsonValue::Option(Some(value)) => {
-                    let inner = coerce_value((**value).clone(), &inner_type)?;
+            match as_option(&node.value) {
+                Some(None) => *node = option_none(inner_type.clone()),
+                Some(Some(value)) => {
+                    let inner = coerce_value(value.clone(), &inner_type)?;
                     *node = option_some(inner, inner_type.clone());
                 }
-                _ => {
+                None => {
                     let value = coerce_value(node.value.clone(), &inner_type)?;
                     *node = option_some(value, inner_type.clone());
                 }
@@ -468,7 +473,7 @@ fn convert_object_array(values: &[JsonInput]) -> Result<Option<Node>> {
         }
     }
 
-    let object_type = Type::Object(String::new(), field_types);
+    let object_type = Type::Object(field_types);
     let (item_type, row_values) = if values.iter().any(|value| matches!(value, JsonInput::Null)) {
         // Keep null rows in place and wrap object rows with the same inferred Option schema.
         let item_type = option_type(object_type.clone());
@@ -476,10 +481,10 @@ fn convert_object_array(values: &[JsonInput]) -> Result<Option<Node>> {
         let row_values = values
             .iter()
             .map(|value| match value {
-                JsonInput::Object(_) => AsonValue::Option(Some(Box::new(AsonValue::Object(
+                JsonInput::Object(_) => some_value(AsonValue::Object(
                     rows.next().expect("one inferred row per object"),
-                )))),
-                JsonInput::Null => AsonValue::Option(None),
+                )),
+                JsonInput::Null => none_value(),
                 _ => unreachable!(),
             })
             .collect();
@@ -589,7 +594,7 @@ fn convert_object(fields: Vec<(String, JsonInput)>) -> Result<Node> {
         }
         Ok(Node {
             value: AsonValue::Object(values),
-            ty: Type::Object(String::new(), types),
+            ty: Type::Object(types),
         })
     } else {
         let mut keys = Vec::with_capacity(fields.len());
@@ -621,10 +626,67 @@ fn option_type(item: Type) -> Type {
     )
 }
 
+/// Creates the predefined `Option::None` Enumeration value.
+fn none_value() -> AsonValue {
+    AsonValue::Enumeration {
+        name: "Option".into(),
+        variant: "None".into(),
+        payload: VariantValue::Unit,
+    }
+}
+
+/// Creates the predefined `Option::Some(value)` Enumeration value.
+fn some_value(value: AsonValue) -> AsonValue {
+    AsonValue::Enumeration {
+        name: "Option".into(),
+        variant: "Some".into(),
+        payload: VariantValue::Newtype(Box::new(value)),
+    }
+}
+
+/// Views a value as the predefined `Option` Enumeration.
+///
+/// Returns `Some(None)` for `None`, `Some(Some(payload))` for `Some`, and `None` for any other
+/// value.
+fn as_option(value: &AsonValue) -> Option<Option<&AsonValue>> {
+    match value {
+        AsonValue::Enumeration {
+            name,
+            variant,
+            payload,
+        } if name == "Option" => match (variant.as_str(), payload) {
+            ("None", VariantValue::Unit) => Some(None),
+            ("Some", VariantValue::Newtype(value)) => Some(Some(value)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Owned counterpart of [`as_option`]; returns the value unchanged when it is not an `Option`.
+fn into_option(value: AsonValue) -> std::result::Result<Option<AsonValue>, AsonValue> {
+    match value {
+        AsonValue::Enumeration {
+            name,
+            variant,
+            payload,
+        } if name == "Option" => match (variant.as_str(), payload) {
+            ("None", VariantValue::Unit) => Ok(None),
+            ("Some", VariantValue::Newtype(value)) => Ok(Some(*value)),
+            (_, payload) => Err(AsonValue::Enumeration {
+                name,
+                variant,
+                payload,
+            }),
+        },
+        value => Err(value),
+    }
+}
+
 /// Creates the `None` value and its matching `Option<T>` schema node.
 fn option_none(item: Type) -> Node {
     Node {
-        value: AsonValue::Option(None),
+        value: none_value(),
         ty: option_type(item),
     }
 }
@@ -632,7 +694,7 @@ fn option_none(item: Type) -> Node {
 /// Creates the `Some(value)` value and its matching `Option<T>` schema node.
 fn option_some(value: AsonValue, item: Type) -> Node {
     Node {
-        value: AsonValue::Option(Some(Box::new(value))),
+        value: some_value(value),
         ty: option_type(item),
     }
 }
@@ -714,7 +776,7 @@ fn unify_type(nodes: &[Node]) -> Result<Type> {
                         ty: (**value_type).clone(),
                     }));
                 }
-                (Type::Object(_, fields), AsonValue::Object(values))
+                (Type::Object(fields), AsonValue::Object(values))
                     if fields.len() == values.len() =>
                 {
                     for (field, (name, value)) in fields.iter().zip(values) {
@@ -754,14 +816,14 @@ fn unify_type(nodes: &[Node]) -> Result<Type> {
     {
         let inner_nodes = nodes
             .iter()
-            .filter_map(|node| match &node.value {
-                AsonValue::Option(Some(value)) => Some(Node {
-                    value: (**value).clone(),
+            .filter_map(|node| match as_option(&node.value) {
+                Some(Some(value)) => Some(Node {
+                    value: value.clone(),
                     ty: option_inner_type(&node.ty).unwrap(),
                 }),
-                AsonValue::Option(None) => None,
-                value => Some(Node {
-                    value: value.clone(),
+                Some(None) => None,
+                None => Some(Node {
+                    value: node.value.clone(),
                     ty: node.ty.clone(),
                 }),
             })
@@ -860,17 +922,6 @@ fn coerce_value(value: AsonValue, ty: &Type) -> Result<AsonValue> {
                 })
                 .collect::<Result<_>>()?,
         ),
-        (AsonValue::Option(None), Type::Enum(_, _)) => AsonValue::Option(None),
-        (AsonValue::Option(Some(value)), Type::Enum(name, variants)) if name == "Option" => {
-            let item_type = variants
-                .iter()
-                .find_map(|variant| match variant {
-                    Variant::Newtype(name, ty) if name == "Some" => Some(ty),
-                    _ => None,
-                })
-                .ok_or_else(|| ConversionError("Invalid Option schema.".into()))?;
-            AsonValue::Option(Some(Box::new(coerce_value(*value, item_type)?)))
-        }
         (value, Type::Enum(name, variants)) if name == "Option" => {
             let item_type = variants
                 .iter()
@@ -879,7 +930,10 @@ fn coerce_value(value: AsonValue, ty: &Type) -> Result<AsonValue> {
                     _ => None,
                 })
                 .ok_or_else(|| ConversionError("Invalid Option schema.".into()))?;
-            AsonValue::Option(Some(Box::new(coerce_value(value, item_type)?)))
+            match into_option(value) {
+                Ok(None) => none_value(),
+                Ok(Some(value)) | Err(value) => some_value(coerce_value(value, item_type)?),
+            }
         }
         (value, ty) if value_matches_type(&value, ty) => value,
         _ => {
@@ -903,7 +957,7 @@ fn value_matches_type(value: &AsonValue, ty: &Type) -> bool {
             | (AsonValue::List(_), Type::List(..))
             | (AsonValue::Object(_), Type::Object(..))
             | (AsonValue::Map(_), Type::Map(..))
-            | (AsonValue::Option(_), Type::Enum(..))
+            | (AsonValue::Enumeration { .. }, Type::Enum(..))
     )
 }
 
@@ -927,7 +981,7 @@ fn encode_node(value: &AsonValue, ty: &Type) -> Result<AsonbValue<'static>> {
                 .map(|value| encode_node(value, item_type))
                 .collect::<Result<_>>()?,
         ),
-        (AsonValue::Object(values), Type::Object(_, fields)) if values.len() == fields.len() => {
+        (AsonValue::Object(values), Type::Object(fields)) if values.len() == fields.len() => {
             AsonbValue::Object(
                 values
                     .iter()
@@ -944,24 +998,37 @@ fn encode_node(value: &AsonValue, ty: &Type) -> Result<AsonbValue<'static>> {
                 })
                 .collect::<Result<_>>()?,
         ),
-        (AsonValue::Option(None), Type::Enum(name, variants)) if name == "Option" => {
-            let index = variants
-                .iter()
-                .position(|variant| matches!(variant, Variant::Unit(name) if name == "None"))
-                .ok_or_else(|| ConversionError("Invalid Option schema.".into()))?;
-            AsonbValue::Enum(index as u32, Box::new(AsonbValue::Tuple(Vec::new())))
-        }
-        (AsonValue::Option(Some(value)), Type::Enum(name, variants)) if name == "Option" => {
-            let (index, item_type) = variants
-                .iter()
-                .enumerate()
-                .find_map(|(index, variant)| match variant {
-                    Variant::Newtype(name, ty) if name == "Some" => Some((index, ty)),
-                    _ => None,
-                })
-                .ok_or_else(|| ConversionError("Invalid Option schema.".into()))?;
-            AsonbValue::Enum(index as u32, Box::new(encode_node(value, item_type)?))
-        }
+        (value, Type::Enum(name, variants)) if name == "Option" => match as_option(value) {
+            Some(None) => {
+                let index = variants
+                    .iter()
+                    .position(|variant| matches!(variant, Variant::Unit(name) if name == "None"))
+                    .ok_or_else(|| ConversionError("Invalid Option schema.".into()))?;
+                AsonbValue::Enumeration {
+                    index: index as u32,
+                    payload: AsonbVariantValue::Unit,
+                }
+            }
+            Some(Some(value)) => {
+                let (index, item_type) = variants
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, variant)| match variant {
+                        Variant::Newtype(name, ty) if name == "Some" => Some((index, ty)),
+                        _ => None,
+                    })
+                    .ok_or_else(|| ConversionError("Invalid Option schema.".into()))?;
+                AsonbValue::Enumeration {
+                    index: index as u32,
+                    payload: AsonbVariantValue::Newtype(Box::new(encode_node(value, item_type)?)),
+                }
+            }
+            None => {
+                return Err(ConversionError(format!(
+                    "JSON value does not match inferred ASONB type {ty:?}."
+                )));
+            }
+        },
         _ => {
             return Err(ConversionError(format!(
                 "JSON value does not match inferred ASONB type {ty:?}."
@@ -1054,9 +1121,9 @@ mod tests {
         assert_eq!(
             ason::de_value_from_str(&output).unwrap(),
             AsonValue::List(vec![
-                AsonValue::Option(None),
-                AsonValue::Option(Some(Box::new(AsonValue::I32(1)))),
-                AsonValue::Option(Some(Box::new(AsonValue::I32(2)))),
+                none_value(),
+                some_value(AsonValue::I32(1)),
+                some_value(AsonValue::I32(2)),
             ])
         );
         assert!(json_to_ason(r#"{"key": 1, "key": 2}"#).is_err());
@@ -1068,7 +1135,7 @@ mod tests {
         let Type::List(_, item) = schema.root else {
             panic!("expected root List schema");
         };
-        let Type::Object(_, fields) = *item else {
+        let Type::Object(fields) = *item else {
             panic!("expected Object elements");
         };
         assert_eq!(
@@ -1089,7 +1156,7 @@ mod tests {
         let Type::List(_, row_type) = schema.root else {
             panic!("expected root List schema");
         };
-        let Type::Object(_, row_fields) = row_type.as_ref() else {
+        let Type::Object(row_fields) = row_type.as_ref() else {
             panic!("expected row Object schema");
         };
         let Type::Enum(_, variants) = &row_fields[0].ty else {
@@ -1098,7 +1165,7 @@ mod tests {
         let Variant::Newtype(_, nested_type) = &variants[1] else {
             panic!("expected Option::Some schema");
         };
-        assert!(matches!(nested_type, Type::Object(_, fields) if fields[0].name == "x"));
+        assert!(matches!(nested_type, Type::Object(fields) if fields[0].name == "x"));
 
         let bytes = json_to_asonb(r#"[{"id": 1}, null]"#).unwrap();
         let (schema, value) = asonb::de_value_from_slice(&bytes).unwrap();
@@ -1107,7 +1174,7 @@ mod tests {
         };
         assert!(matches!(item_type.as_ref(), Type::Enum(name, _) if name == "Option"));
         assert!(
-            matches!(value, AsonbValue::List(items) if matches!(items[1], AsonbValue::Enum(0, _)))
+            matches!(value, AsonbValue::List(items) if matches!(items[1], AsonbValue::Enumeration { index: 0, .. }))
         );
 
         let bytes = json_to_asonb(r#"[{"bad-key": 1}, {"other-key": 2147483648}]"#).unwrap();
@@ -1143,7 +1210,7 @@ mod tests {
 
         let bytes = json_to_asonb(r#"{"😀": 1}"#).unwrap();
         let (schema, _) = asonb::de_value_from_slice(&bytes).unwrap();
-        assert!(matches!(schema.root, Type::Object(_, _)));
+        assert!(matches!(schema.root, Type::Object(_)));
 
         let bytes = json_to_asonb(r#"{"NaN": 1}"#).unwrap();
         let (schema, _) = asonb::de_value_from_slice(&bytes).unwrap();
