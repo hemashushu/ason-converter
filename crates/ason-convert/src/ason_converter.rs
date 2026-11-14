@@ -17,123 +17,365 @@ use asonb::{
 };
 use chrono::{DateTime, Utc};
 
-#[derive(Debug)]
-/// An error raised while parsing or converting an ASON or ASONB value.
+/// The category of a [`ConversionError`], returned by [`ConversionError::kind`].
 ///
-/// The message describes the underlying parse, schema, encoding, or I/O failure.
-pub struct ConversionError(
-    #[doc = "The underlying parser, schema, serialization, or I/O error message."] pub(crate) String,
-);
+/// Use the category to decide how to handle a failure, for example, when choosing a process exit
+/// status. New categories may be added in future versions, so a `match` must include a wildcard
+/// arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ConversionErrorKind {
+    /// The input is not a valid document in the source format.
+    ///
+    /// Examples include an ASON, JSON, or JSONC syntax error; an unterminated JSONC block
+    /// comment; duplicate JSON object keys; and an ASONB document with a bad header, truncated
+    /// data, an invalid schema, or values that do not match its schema.
+    InvalidDocument,
+    /// The input is valid but cannot be represented in the target format.
+    ///
+    /// Examples include a JSON array whose elements have incompatible types, an ASON collection
+    /// whose ASONB element type cannot be inferred, a NaN or infinite number converted to JSON,
+    /// and an ASONB DateTime that is out of range for ASON.
+    Unconvertible,
+    /// Reading from the input stream or writing to the output stream failed.
+    ///
+    /// Only the reader functions, such as [`asonb_reader_to_ason`], perform stream I/O.
+    Io,
+}
+
+/// An error raised while parsing, converting, or writing ASON, ASONB, JSON, or JSONC.
+///
+/// This implements [`std::error::Error`] and displays a human-readable description of the
+/// failure. Use [`kind`](Self::kind) to find out whether the input was invalid, could not be
+/// represented in the target format, or a stream operation failed. Errors from the ASON, ASONB,
+/// JSON, and I/O libraries are converted to their display messages; their original types,
+/// structured details, and error sources are not retained. The message is not a stable format
+/// for programmatic matching.
+///
+/// # Example
+///
+/// ```
+/// use ason_convert::{ConversionError, ConversionErrorKind, json_to_ason};
+/// use std::error::Error;
+///
+/// let error: ConversionError = json_to_ason(r#"[1, "two"]"#).unwrap_err();
+/// assert_eq!(error.kind(), ConversionErrorKind::Unconvertible);
+/// assert!(!error.to_string().is_empty());
+/// assert!(error.source().is_none());
+///
+/// let error = json_to_ason(r#"{"id": }"#).unwrap_err();
+/// assert_eq!(error.kind(), ConversionErrorKind::InvalidDocument);
+/// ```
+#[derive(Debug)]
+pub struct ConversionError {
+    /// The category used by callers to distinguish failures.
+    kind: ConversionErrorKind,
+    /// The underlying parser, schema, serialization, or I/O error message.
+    message: String,
+}
+
+impl ConversionError {
+    /// Creates an error in the given category from a displayable message.
+    pub(crate) fn new(kind: ConversionErrorKind, message: impl fmt::Display) -> Self {
+        Self {
+            kind,
+            message: message.to_string(),
+        }
+    }
+
+    /// Creates an error for input that is not a valid source document.
+    pub(crate) fn invalid_document(message: impl fmt::Display) -> Self {
+        Self::new(ConversionErrorKind::InvalidDocument, message)
+    }
+
+    /// Creates an error for valid input that the target format cannot represent.
+    pub(crate) fn unconvertible(message: impl fmt::Display) -> Self {
+        Self::new(ConversionErrorKind::Unconvertible, message)
+    }
+
+    /// Returns the category of this error.
+    pub fn kind(&self) -> ConversionErrorKind {
+        self.kind
+    }
+}
 
 impl fmt::Display for ConversionError {
     /// Writes the underlying conversion error message without additional decoration.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 
 impl std::error::Error for ConversionError {}
 
 impl From<ason::AsonError> for ConversionError {
-    /// Preserves the parser's human-readable message in the public error type.
+    /// Preserves the ASON error's message and classifies it as an invalid document.
+    ///
+    /// ASON serialization errors are reclassified where they are produced.
     fn from(error: ason::AsonError) -> Self {
-        Self(error.to_string())
+        Self::invalid_document(error)
     }
 }
 
 impl From<asonb::AsonbError> for ConversionError {
-    /// Converts an ASONB parsing or serialization error into the shared error type.
+    /// Preserves the ASONB error's message and classifies it as an invalid document.
+    ///
+    /// ASONB serialization errors are reclassified where they are produced.
     fn from(error: asonb::AsonbError) -> Self {
-        Self(error.to_string())
+        Self::invalid_document(error)
     }
 }
 
 impl From<serde_json::Error> for ConversionError {
-    /// Converts a JSON parsing or formatting error into the shared error type.
+    /// Classifies a JSON error by its category: syntax and premature end of input mean an
+    /// invalid document, data errors mean an unconvertible value, and I/O errors stay I/O.
     fn from(error: serde_json::Error) -> Self {
-        Self(error.to_string())
+        let kind = match error.classify() {
+            serde_json::error::Category::Io => ConversionErrorKind::Io,
+            serde_json::error::Category::Syntax | serde_json::error::Category::Eof => {
+                ConversionErrorKind::InvalidDocument
+            }
+            serde_json::error::Category::Data => ConversionErrorKind::Unconvertible,
+        };
+        Self::new(kind, error)
     }
 }
 
 impl From<std::io::Error> for ConversionError {
-    /// Converts a stream read or write failure into the shared error type.
+    /// Converts a stream read or write failure into an I/O error.
     fn from(error: std::io::Error) -> Self {
-        Self(error.to_string())
+        Self::new(ConversionErrorKind::Io, error)
     }
+}
+
+/// Wraps a reader or writer and records whether any of its operations failed.
+///
+/// ASON and ASONB codecs report stream failures as their own error types. The flag lets the
+/// streaming functions classify such errors as [`ConversionErrorKind::Io`].
+pub(crate) struct IoTracker<T> {
+    /// The wrapped reader or writer.
+    inner: T,
+    /// Whether a read, write, or flush returned an error.
+    failed: bool,
+}
+
+impl<T> IoTracker<T> {
+    /// Wraps a stream with a cleared failure flag.
+    pub(crate) fn new(inner: T) -> Self {
+        Self {
+            inner,
+            failed: false,
+        }
+    }
+
+    /// Records a failure and passes the result through unchanged.
+    fn track<U>(&mut self, result: std::io::Result<U>) -> std::io::Result<U> {
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+}
+
+impl<R: Read> Read for IoTracker<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let result = self.inner.read(buffer);
+        self.track(result)
+    }
+}
+
+impl<W: Write> Write for IoTracker<W> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let result = self.inner.write(buffer);
+        self.track(result)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let result = self.inner.flush();
+        self.track(result)
+    }
+}
+
+/// Runs a streaming conversion and reclassifies its error as I/O if either stream failed.
+pub(crate) fn with_tracked_io<R: Read, W: Write>(
+    input: R,
+    output: &mut W,
+    convert: impl FnOnce(&mut IoTracker<R>, &mut IoTracker<&mut W>) -> Result<()>,
+) -> Result<()> {
+    let mut input = IoTracker::new(input);
+    let mut output = IoTracker::new(output);
+    convert(&mut input, &mut output).map_err(|mut error| {
+        if input.failed || output.failed {
+            error.kind = ConversionErrorKind::Io;
+        }
+        error
+    })
 }
 
 pub(crate) type Result<T> = std::result::Result<T, ConversionError>;
 
-/// Parses an ASON value and encodes it as a complete ASONB document.
+/// Parses an ASON value and encodes it as a complete ASONB document in memory.
 ///
-/// The returned bytes include the document schema and binary header. ASONB requires each
-/// collection to have one element type, so heterogeneous lists or map keys/values return an
-/// error. Empty collections use `i32` as their inferred element type because no value is
-/// available to infer a more specific type.
+/// `input` is ASON text; the returned bytes contain the binary header, inferred schema, and
+/// encoded root value. Comments and the original text layout are not retained.
+///
+/// ASONB Lists require one element type, and Maps require one key type and one value type.
+/// Types are unified recursively without numeric promotion: for example, an `i32` and an
+/// `i64` cannot be elements of the same List. Objects in a collection must have matching field
+/// names in the same order. Variants of the same Enumeration can be merged, provided repeated
+/// variants have compatible payloads. Types that cannot be inferred, such as an empty List's
+/// element type, the inner type of an `Option` seen only as `None`, or an unselected `Result`
+/// branch, default to `i32`.
+///
+/// DateTime values are stored as Unix timestamp seconds. Their original UTC offset and
+/// leap-second representation are lost; decoding produces a UTC DateTime.
 ///
 /// # Errors
-/// Returns an error if the input is invalid ASON, a collection has incompatible element types,
-/// or ASONB serialization fails.
+///
+/// Returns an error if the input is invalid ASON, collection types or Enumeration payloads
+/// cannot be unified, or the value cannot be encoded as ASONB.
+///
+/// # Example
+///
+/// ```
+/// use ason_convert::{ason_to_asonb, asonb_to_ason};
+///
+/// let binary = ason_to_asonb("42")?;
+/// assert_eq!(asonb_to_ason(&binary)?, "42");
+/// assert!(ason_to_asonb(r#"[1, "two"]"#).is_err());
+///
+/// let leap_second = ason_to_asonb(r#"d"2016-12-31T23:59:60Z""#)?;
+/// assert_eq!(asonb_to_ason(&leap_second)?, r#"d"2016-12-31T23:59:59Z""#);
+/// # Ok::<(), ason_convert::ConversionError>(())
+/// ```
 pub fn ason_to_asonb(input: &str) -> Result<Vec<u8>> {
     let value = ason::de_value_from_str(input)?;
     let (root_type, binary_value) = to_asonb_value(&value)?;
     let schema = DocumentSchema::new(root_type);
     let mut output = Vec::new();
-    asonb::ser_value_to_writer(&schema, &binary_value, &mut output)?;
+    asonb::ser_value_to_writer(&schema, &binary_value, &mut output)
+        .map_err(ConversionError::unconvertible)?;
     Ok(output)
 }
 
-/// Decodes one complete ASONB document and serializes its root value as ASON text.
+/// Decodes exactly one complete ASONB document and returns its root value as ASON text.
 ///
-/// Unlike [`asonb_reader_to_ason`], this convenience function buffers the decoded root value
-/// before producing the returned string.
+/// `input` must include the ASONB header and schema and contain no bytes after the document.
+/// The entire root value is decoded in memory, including multi-chunk Lists; use
+/// [`asonb_reader_to_ason`] for streaming supported List roots.
+///
+/// The returned text is newly serialized: formatting and comments from any original ASON text
+/// are not recoverable. Predefined `Option` and `Result` variants use ASON shorthand such as
+/// `Some(1)` and `Err("message")`. ASONB DateTime values are rendered in UTC.
 ///
 /// # Errors
-/// Returns an error if the bytes do not contain a valid ASONB document or if its schema and
-/// value disagree.
+///
+/// Returns an error for an invalid or truncated document, trailing bytes, an invalid schema or
+/// value, an out-of-range DateTime, or an ASON serialization failure.
+///
+/// # Example
+///
+/// ```
+/// use ason_convert::{ason_to_asonb, asonb_to_ason};
+///
+/// let mut binary = ason_to_asonb("Some(42)")?;
+/// assert_eq!(asonb_to_ason(&binary)?, "Some(42)");
+/// binary.push(0);
+/// assert!(asonb_to_ason(&binary).is_err()); // Trailing bytes are rejected.
+///
+/// let date = ason_to_asonb(r#"d"2024-03-16T16:30:50+08:00""#)?;
+/// assert_eq!(asonb_to_ason(&date)?, r#"d"2024-03-16T08:30:50Z""#);
+/// # Ok::<(), ason_convert::ConversionError>(())
+/// ```
 pub fn asonb_to_ason(input: &[u8]) -> Result<String> {
     let (schema, value) = asonb::de_value_from_reader(Cursor::new(input))?;
     let value = from_asonb_value(&schema, &schema.root, &value)?;
-    Ok(ason::ser_value_to_string(&value)?)
+    ason::ser_value_to_string(&value).map_err(ConversionError::unconvertible)
 }
 
-/// Converts an ASONB document from a reader directly into ASON text on a writer.
+/// Converts an ASONB document from `input` into UTF-8 ASON text on `output`.
 ///
-/// A multi-chunk root List, or a multi-chunk List inside a root `Result::Ok`, is written one item
-/// at a time, keeping memory use bounded by the current item. Other root values are decoded as a
-/// single value. The input and output streams remain owned by the caller.
+/// A multi-chunk root List, or a multi-chunk List in the selected `Result::Ok` branch, is read
+/// and written one item at a time. The converter retains the schema and the current item rather
+/// than the whole List; the supplied writer may still buffer its output. Other roots, including
+/// regular Lists and `Result::Err`, are decoded as one value and checked for end-of-input. That
+/// EOF check can block on a live reader.
+///
+/// A multi-chunk root List may end at EOF between chunks or at an explicit terminator. A List
+/// inside `Result::Ok` requires the terminator. When a terminator is present, bytes following it
+/// are not checked or consumed.
+///
+/// `input` is passed by value; pass `&mut reader` if it must remain accessible afterwards.
+/// `output` is borrowed and is not flushed. On failure, input may have been consumed and output
+/// may contain a partial, invalid ASON value.
 ///
 /// # Errors
-/// Returns an error for invalid ASONB data, an absent root value, a schema/value mismatch, or an
-/// input/output failure.
+///
+/// Returns an error for invalid or truncated ASONB data, an absent root value, a schema/value
+/// mismatch, an unrepresentable ASON value, or an input/output failure.
+/// Any read or write failure is reported as [`ConversionErrorKind::Io`](crate::ConversionErrorKind::Io),
+/// even when the ASONB decoder reports it as a decoding error.
+///
+/// # Example
+///
+/// This example uses the `asonb` crate to create a multi-chunk List; add it as a direct
+/// dependency to run the example in another crate.
+///
+/// ```
+/// use ason_convert::{ason_to_json, asonb_reader_to_ason};
+///
+/// let mut binary = Vec::new();
+/// {
+///     let mut writer = asonb::list_stream_writer::<i32, _>(&mut binary);
+///     writer.start_list()?;
+///     writer.writes(&[1, 2])?;
+///     writer.end_list()?;
+/// }
+/// binary.extend_from_slice(b"next");
+///
+/// let mut input = binary.as_slice();
+/// let mut output = Vec::new();
+/// asonb_reader_to_ason(&mut input, &mut output)?;
+/// assert_eq!(input, b"next"); // Bytes after the List terminator remain unread.
+/// let text = std::str::from_utf8(&output).unwrap();
+/// assert_eq!(ason_to_json(text)?, "[\n  1,\n  2\n]");
+/// # Ok::<(), ason_convert::ConversionError>(())
+/// ```
 pub fn asonb_reader_to_ason<R: Read, W: Write>(input: R, output: &mut W) -> Result<()> {
-    let mut document = asonb::value_document_reader(input)?;
-    let schema = document.schema().clone();
-    let root_type = document.root_type().clone();
-    if let Some(item_type) = document.item_type().cloned() {
-        // Keep multi-chunk lists streaming instead of collecting the full list in memory.
-        let mut writer = if document.is_streaming_result() {
-            ason::result_stream_writer::<AsonValue, _>(output).start_ok()?
+    with_tracked_io(input, output, |input, output| {
+        let mut document = asonb::value_document_reader(input)?;
+        let schema = document.schema().clone();
+        let root_type = document.root_type().clone();
+        if let Some(item_type) = document.item_type().cloned() {
+            // Keep multi-chunk lists streaming instead of collecting the full list in memory.
+            let mut writer = if document.is_streaming_result() {
+                ason::result_stream_writer::<AsonValue, _>(output)
+                    .start_ok()
+                    .map_err(ConversionError::unconvertible)?
+            } else {
+                let mut writer = ason::list_stream_writer::<AsonValue, _>(output);
+                writer
+                    .start_list()
+                    .map_err(ConversionError::unconvertible)?;
+                writer
+            };
+            for value in document {
+                let value = value?;
+                let value = from_asonb_value(&schema, &item_type, &value)?;
+                writer
+                    .write_value(&value)
+                    .map_err(ConversionError::unconvertible)?;
+            }
+            writer.end_list().map_err(ConversionError::unconvertible)?;
         } else {
-            let mut writer = ason::list_stream_writer::<AsonValue, _>(output);
-            writer.start_list()?;
-            writer
-        };
-        for value in document {
-            let value = value?;
-            let value = from_asonb_value(&schema, &item_type, &value)?;
-            writer.write_value(&value)?;
+            let value = document.next().transpose()?.ok_or_else(|| {
+                ConversionError::invalid_document("ASONB document has no root value.")
+            })?;
+            let value = from_asonb_value(&schema, &root_type, &value)?;
+            ason::ser_value_to_writer(&value, output).map_err(ConversionError::unconvertible)?;
         }
-        writer.end_list()?;
-    } else {
-        let value = document
-            .next()
-            .transpose()?
-            .ok_or_else(|| ConversionError("ASONB document has no root value.".into()))?;
-        let value = from_asonb_value(&schema, &root_type, &value)?;
-        ason::ser_value_to_writer(&value, output)?;
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Placeholder for a type that no value determines, such as the element type of an empty List,
@@ -193,8 +435,8 @@ fn infer_type(value: &AsonValue) -> Result<Type> {
             ("None", VariantValue::Unit) => option_type(UNKNOWN),
             ("Some", VariantValue::Newtype(value)) => option_type(infer_type(value)?),
             _ => {
-                return Err(ConversionError(
-                    "Expect \"Option::None\" or \"Option::Some(...)\".".into(),
+                return Err(ConversionError::invalid_document(
+                    "Expect \"Option::None\" or \"Option::Some(...)\".",
                 ));
             }
         },
@@ -204,7 +446,7 @@ fn infer_type(value: &AsonValue) -> Result<Type> {
             payload,
         } if name == "Result" => {
             let VariantValue::Newtype(value) = payload else {
-                return Err(ConversionError(format!(
+                return Err(ConversionError::invalid_document(format!(
                     "\"Result::{variant}\" must have exactly one value."
                 )));
             };
@@ -213,8 +455,8 @@ fn infer_type(value: &AsonValue) -> Result<Type> {
                 "Ok" => result_type(value_type, UNKNOWN),
                 "Err" => result_type(UNKNOWN, value_type),
                 _ => {
-                    return Err(ConversionError(
-                        "Expect \"Result::Ok(...)\" or \"Result::Err(...)\".".into(),
+                    return Err(ConversionError::invalid_document(
+                        "Expect \"Result::Ok(...)\" or \"Result::Err(...)\".",
                     ));
                 }
             }
@@ -290,7 +532,7 @@ fn unify_types(left: Type, right: Type) -> Result<Type> {
         return Ok(right);
     }
     let mismatch =
-        || ConversionError("ASONB collections require homogeneous element types.".into());
+        || ConversionError::unconvertible("ASONB collections require homogeneous element types.");
     Ok(match (left, right) {
         (Type::List(_, left), Type::List(_, right)) => {
             Type::List(Encoding::Regular, Box::new(unify_types(*left, *right)?))
@@ -405,7 +647,8 @@ fn finalize_type(ty: Type) -> Type {
 /// Enumeration variants are located by name because unification may have merged several
 /// variants into one schema.
 fn encode_value(value: &AsonValue, ty: &Type) -> Result<AsonbValue<'static>> {
-    let mismatch = || ConversionError(format!("ASON value does not match ASONB type {ty:?}."));
+    let mismatch =
+        || ConversionError::unconvertible(format!("ASON value does not match ASONB type {ty:?}."));
     Ok(match (value, ty) {
         (AsonValue::I8(value), _) => AsonbValue::I8(*value),
         (AsonValue::I16(value), _) => AsonbValue::I16(*value),
@@ -519,7 +762,9 @@ pub(crate) fn from_asonb_value(
     value: &AsonbValue<'_>,
 ) -> Result<AsonValue> {
     let ty = resolve_type(schema, ty)?;
-    let mismatch = || ConversionError(format!("ASONB value does not match schema type {ty:?}."));
+    let mismatch = || {
+        ConversionError::invalid_document(format!("ASONB value does not match schema type {ty:?}."))
+    };
     Ok(match (ty.clone(), value) {
         (Type::I8, AsonbValue::I8(value)) => AsonValue::I8(*value),
         (Type::I16, AsonbValue::I16(value)) => AsonValue::I16(*value),
@@ -536,7 +781,7 @@ pub(crate) fn from_asonb_value(
         (Type::String(_), AsonbValue::String(value)) => AsonValue::String(value.to_string()),
         (Type::DateTime, AsonbValue::DateTime(seconds)) => {
             let value = DateTime::<Utc>::from_timestamp(*seconds, 0)
-                .ok_or_else(|| ConversionError("ASONB DateTime is out of range.".into()))?;
+                .ok_or_else(|| ConversionError::unconvertible("ASONB DateTime is out of range."))?;
             AsonValue::DateTime(value.fixed_offset())
         }
         (Type::Bytes(_), AsonbValue::Bytes(value)) => AsonValue::Bytes(value.to_vec()),
@@ -642,9 +887,13 @@ fn resolve_type(schema: &DocumentSchema, ty: &Type) -> Result<Type> {
             .references
             .get(index as usize)
             .cloned()
-            .ok_or_else(|| ConversionError("ASONB schema reference is out of range.".into()))?;
+            .ok_or_else(|| {
+                ConversionError::invalid_document("ASONB schema reference is out of range.")
+            })?;
     }
-    Err(ConversionError("ASONB schema contains a cycle.".into()))
+    Err(ConversionError::invalid_document(
+        "ASONB schema contains a cycle.",
+    ))
 }
 
 #[cfg(test)]
@@ -784,6 +1033,70 @@ mod tests {
                 AsonValue::I32(2),
                 AsonValue::I32(3)
             ])
+        );
+    }
+
+    #[test]
+    /// Checks that errors are classified as invalid input, unconvertible values, or I/O failures.
+    fn test_conversion_error_kinds() {
+        /// A writer whose every write fails.
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("write failed"))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let kind = |result: Result<()>| result.unwrap_err().kind();
+        assert_eq!(
+            kind(ason_to_asonb("{").map(drop)),
+            ConversionErrorKind::InvalidDocument
+        );
+        assert_eq!(
+            kind(asonb_to_ason(b"\0ASONB\0\x01").map(drop)),
+            ConversionErrorKind::InvalidDocument
+        );
+        assert_eq!(
+            kind(crate::json_to_ason(r#"{"a": 1, "a": 2}"#).map(drop)),
+            ConversionErrorKind::InvalidDocument
+        );
+        assert_eq!(
+            kind(crate::json_to_ason("/* open").map(drop)),
+            ConversionErrorKind::InvalidDocument
+        );
+        assert_eq!(
+            kind(ason_to_asonb(r#"[1, "two"]"#).map(drop)),
+            ConversionErrorKind::Unconvertible
+        );
+        assert_eq!(
+            kind(crate::ason_to_json("NaN").map(drop)),
+            ConversionErrorKind::Unconvertible
+        );
+
+        let binary = ason_to_asonb("[1, 2]").unwrap();
+        assert_eq!(
+            kind(asonb_reader_to_ason(binary.as_slice(), &mut FailingWriter)),
+            ConversionErrorKind::Io
+        );
+        assert_eq!(
+            kind(crate::asonb_reader_to_json(
+                binary.as_slice(),
+                &mut FailingWriter
+            )),
+            ConversionErrorKind::Io
+        );
+        let mut output = Vec::new();
+        assert_eq!(
+            kind(asonb_reader_to_ason(
+                &binary[..binary.len() - 1],
+                &mut output
+            )),
+            ConversionErrorKind::InvalidDocument
         );
     }
 }

@@ -16,7 +16,18 @@ use std::{
 use clap::{CommandFactory, Parser, error::ErrorKind};
 use clap_complete::{Shell, generate};
 
-use ason_convert::{ason_to_asonb, asonb_reader_to_ason};
+use ason_convert::{ConversionError, ConversionErrorKind, ason_to_asonb, asonb_reader_to_ason};
+
+/// Exit status for invalid command-line arguments, including an unsupported completion shell.
+const EXIT_INVALID_ARGUMENTS: u8 = 1;
+/// Exit status for a document that is invalid or does not fit the requested conversion.
+const EXIT_INVALID_DOCUMENT: u8 = 2;
+/// Exit status for a valid document that cannot be represented in the output format.
+const EXIT_FAILED_CONVERSION: u8 = 3;
+/// Exit status for a failure to read input or write output.
+const EXIT_IO_ERROR: u8 = 4;
+/// Exit status when the input already has the output format.
+const EXIT_NO_CONVERSION: u8 = 5;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 /// A format recognized by the command-line converter.
@@ -58,16 +69,35 @@ impl CliError {
 }
 
 impl From<io::Error> for CliError {
-    /// Uses the general I/O failure status for file, pipe, and terminal errors.
+    /// Uses the I/O failure status for file, pipe, and terminal errors.
     fn from(error: io::Error) -> Self {
-        Self::new(1, error.to_string())
+        Self::new(EXIT_IO_ERROR, error.to_string())
     }
 }
 
 type CliResult<T> = std::result::Result<T, CliError>;
 
 #[derive(Parser)]
-#[command(name = "ason2b", version, about = "Convert ASON to and from ASONB")]
+#[command(
+    name = "ason2b",
+    version,
+    author = "Hemashushu <hippospark@gmail.com>",
+    about = "Convert ASON to and from ASONB",
+    after_help = r#"
+EXAMPLES
+    * Convert an ASON file to ASONB
+      ason2b input.ason -o output.asonb
+
+    * Convert an ASONB file to ASON
+      ason2b input.asonb -o output.ason
+
+    * Convert ASON from standard input to an ASONB file
+      echo '{key: "value"}' | ason2b -o output.asonb
+
+    * Convert ASON from standard input to ASONB, then back to ASON
+      echo '{key: "value"}' | ason2b | ason2b
+"#
+)]
 /// Arguments accepted by the `ason2b` command.
 struct Ason2bArgs {
     /// Optional input file; standard input is used when this is omitted.
@@ -95,6 +125,7 @@ struct Ason2bArgs {
     /// Optional output file; standard output is used when this is omitted.
     #[arg(
         short = 'o',
+        long = "output",
         value_name = "OUTPUT",
         help = "Write output to this file (defaults to standard output)"
     )]
@@ -111,9 +142,8 @@ struct Ason2bArgs {
 
 /// Parses arguments and runs the `ason2b` command-line application.
 ///
-/// Conversion errors are printed to standard error and returned as process exit codes. A
-/// successful completion-script request intentionally returns status code 2 for compatibility
-/// with this command's existing behavior.
+/// Errors are printed to standard error and returned as the process exit codes listed in the
+/// command's documentation. Printing a completion script succeeds with status 0.
 fn main() -> ExitCode {
     let args = match parse_args::<Ason2bArgs>() {
         Ok(args) => args,
@@ -121,7 +151,7 @@ fn main() -> ExitCode {
     };
     if let Some(shell) = args.complete {
         return match emit_completion::<Ason2bArgs>(&shell, "ason2b") {
-            Ok(()) => ExitCode::from(2),
+            Ok(()) => ExitCode::SUCCESS,
             Err(error) => report_error(error),
         };
     }
@@ -136,7 +166,7 @@ fn parse_args<T: Parser>() -> std::result::Result<T, u8> {
     T::try_parse().map_err(|error| {
         let code = match error.kind() {
             ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => 0,
-            _ => 1,
+            _ => EXIT_INVALID_ARGUMENTS,
         };
         let _ = error.print();
         code
@@ -152,7 +182,7 @@ fn emit_completion<T: CommandFactory>(shell: &str, name: &str) -> CliResult<()> 
         "powershell" => Shell::PowerShell,
         _ => {
             return Err(CliError::new(
-                1,
+                EXIT_INVALID_ARGUMENTS,
                 format!("Unsupported completion shell: {shell}"),
             ));
         }
@@ -178,27 +208,36 @@ fn run_ason2b_command(args: Ason2bArgs) -> CliResult<()> {
             Format::Ason
         });
     if source == Format::Json {
-        return Err(CliError::new(1, "ason2b does not accept JSON input."));
+        return Err(CliError::new(
+            EXIT_INVALID_DOCUMENT,
+            "ason2b does not accept JSON input.",
+        ));
     }
     if args.force_text && source == Format::Ason {
         return Err(CliError::new(
-            4,
+            EXIT_INVALID_DOCUMENT,
             "Input is ASON while -t/--text was specified.",
         ));
     }
     if args.force_binary && source == Format::Asonb {
         return Err(CliError::new(
-            3,
+            EXIT_INVALID_DOCUMENT,
             "Input is ASONB while -b/--binary was specified.",
         ));
     }
 
     let output_extension = args.output.as_deref().and_then(output_extension_format);
     if args.force_text && output_extension == Some(Format::Asonb) {
-        return Err(CliError::new(1, "-t conflicts with an .asonb output path."));
+        return Err(CliError::new(
+            EXIT_INVALID_DOCUMENT,
+            "-t conflicts with an .asonb output path.",
+        ));
     }
     if args.force_binary && output_extension == Some(Format::Ason) {
-        return Err(CliError::new(1, "-b conflicts with an .ason output path."));
+        return Err(CliError::new(
+            EXIT_INVALID_DOCUMENT,
+            "-b conflicts with an .ason output path.",
+        ));
     }
     let destination = if args.force_text {
         Format::Ason
@@ -212,10 +251,16 @@ fn run_ason2b_command(args: Ason2bArgs) -> CliResult<()> {
         Format::Asonb
     };
     if destination == Format::Json {
-        return Err(CliError::new(1, "ason2b output must use .ason or .asonb."));
+        return Err(CliError::new(
+            EXIT_INVALID_DOCUMENT,
+            "ason2b output must use .ason or .asonb.",
+        ));
     }
     if source == destination {
-        return Err(CliError::new(2, "No conversion was performed."));
+        return Err(CliError::new(
+            EXIT_NO_CONVERSION,
+            "No conversion was performed.",
+        ));
     }
     let (mut output, output_is_terminal) = output_writer(args.output.as_deref())?;
     if let Some(error) = binary_terminal_write_error(destination, output_is_terminal) {
@@ -224,8 +269,8 @@ fn run_ason2b_command(args: Ason2bArgs) -> CliResult<()> {
     match (source, destination) {
         (Format::Ason, Format::Asonb) => {
             let input = read_all(input.reader)?;
-            let text =
-                std::str::from_utf8(&input).map_err(|error| CliError::new(1, error.to_string()))?;
+            let text = std::str::from_utf8(&input)
+                .map_err(|error| CliError::new(EXIT_INVALID_DOCUMENT, error.to_string()))?;
             output.write_all(&ason_to_asonb(text).map_err(conversion_error)?)?;
         }
         (Format::Asonb, Format::Ason) => {
@@ -239,8 +284,12 @@ fn run_ason2b_command(args: Ason2bArgs) -> CliResult<()> {
 
 /// Returns an error when binary ASONB data would be written directly to a terminal.
 fn binary_terminal_write_error(destination: Format, output_is_terminal: bool) -> Option<CliError> {
-    (destination == Format::Asonb && output_is_terminal)
-        .then(|| CliError::new(5, "Writing ASONB to a terminal is not allowed."))
+    (destination == Format::Asonb && output_is_terminal).then(|| {
+        CliError::new(
+            EXIT_INVALID_DOCUMENT,
+            "Writing ASONB to a terminal is not allowed.",
+        )
+    })
 }
 
 /// Opens a file or standard input and detects its extension and ASONB signature.
@@ -318,9 +367,14 @@ fn read_all(mut input: impl Read) -> CliResult<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Converts a library error to the general conversion-failure exit status.
-fn conversion_error(error: impl std::fmt::Display) -> CliError {
-    CliError::new(1, error.to_string())
+/// Maps a library error to the exit status for its category.
+fn conversion_error(error: ConversionError) -> CliError {
+    let code = match error.kind() {
+        ConversionErrorKind::InvalidDocument => EXIT_INVALID_DOCUMENT,
+        ConversionErrorKind::Io => EXIT_IO_ERROR,
+        _ => EXIT_FAILED_CONVERSION,
+    };
+    CliError::new(code, error.to_string())
 }
 
 /// Prints a non-empty error message and returns its configured process exit code.
@@ -333,7 +387,7 @@ fn report_error(error: CliError) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ason2bArgs, Format, binary_terminal_write_error};
+    use super::{Ason2bArgs, EXIT_INVALID_DOCUMENT, Format, binary_terminal_write_error};
     use clap::Parser;
 
     #[test]
@@ -358,9 +412,9 @@ mod tests {
 
     #[test]
     /// Ensures ASONB bytes are not sent to an interactive terminal.
-    fn terminal_binary_output_uses_exit_code_five() {
+    fn terminal_binary_output_is_an_invalid_document() {
         let error = binary_terminal_write_error(Format::Asonb, true).unwrap();
-        assert_eq!(error.code, 5);
+        assert_eq!(error.code, EXIT_INVALID_DOCUMENT);
         assert!(binary_terminal_write_error(Format::Ason, true).is_none());
         assert!(binary_terminal_write_error(Format::Asonb, false).is_none());
     }

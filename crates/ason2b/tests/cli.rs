@@ -69,7 +69,7 @@ fn help_version_and_completion() {
     assert!(help_text.contains("PowerShell"));
     assert_eq!(invoke(&["--version"], b"").status.code(), Some(0));
     let completion = invoke(&["--complete", "zsh"], b"");
-    assert_eq!(completion.status.code(), Some(2));
+    assert_eq!(completion.status.code(), Some(0));
     assert!(!completion.stdout.is_empty());
     assert_eq!(
         invoke(&["--complete", "unknown"], b"").status.code(),
@@ -78,7 +78,7 @@ fn help_version_and_completion() {
 }
 
 #[test]
-/// Checks extension-based format selection, binary round trips, and documented exit statuses.
+/// Checks extension-based format selection, binary round trips, and every documented exit status.
 fn extension_detection_binary_round_trip_and_exit_statuses() {
     let directory = TempDirectory::new();
     let input_ason = directory.0.join("input.ason");
@@ -133,8 +133,8 @@ fn extension_detection_binary_round_trip_and_exit_statuses() {
     }
 
     let status = |args: &[&str]| invoke(args, b"").status.code();
-    assert_eq!(status(&["-b", output_asonb.to_str().unwrap()]), Some(3));
-    assert_eq!(status(&["--text", input_ason.to_str().unwrap()]), Some(4));
+    assert_eq!(status(&["-b", output_asonb.to_str().unwrap()]), Some(2));
+    assert_eq!(status(&["--text", input_ason.to_str().unwrap()]), Some(2));
     assert_eq!(
         status(&[
             "-t",
@@ -142,16 +142,22 @@ fn extension_detection_binary_round_trip_and_exit_statuses() {
             "-o",
             output_asonb.to_str().unwrap(),
         ]),
-        Some(1)
+        Some(2)
     );
     assert_eq!(status(&["-t", "-b", input_ason.to_str().unwrap()]), Some(1));
-    assert_eq!(status(&[input_json.to_str().unwrap()]), Some(1));
+    assert_eq!(status(&[input_json.to_str().unwrap()]), Some(2));
     assert_eq!(
         status(&[
             input_ason.to_str().unwrap(),
             "-o",
             output_ason.to_str().unwrap(),
         ]),
-        Some(2)
+        Some(5)
     );
+
+    let stdin_status = |stdin: &[u8]| invoke(&["-o", forced_asonb.to_str().unwrap()], stdin);
+    assert_eq!(stdin_status(b"{name: ").status.code(), Some(2));
+    assert_eq!(stdin_status(b"[1, \"two\"]").status.code(), Some(3));
+    let missing = directory.0.join("missing.ason");
+    assert_eq!(status(&[missing.to_str().unwrap()]), Some(4));
 }

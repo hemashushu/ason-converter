@@ -1,0 +1,59 @@
+NAME
+    ason2b - Convert ASON to and from ASONB
+
+USAGE
+    ason2b [options] [INPUT]
+
+ARGUMENTS
+    INPUT                   Input file (defaults to standard input)
+
+OPTIONS
+    -t, --text              Force conversion from ASONB to ASON
+    -b, --binary            Force conversion from ASON to ASONB
+    -o, --output OUTPUT     Write output to this file (defaults to standard output)
+        --complete SHELL    Print a completion script to standard output
+                            Supported shells: bash, zsh, fish, PowerShell
+    -h, --help              Show help information
+    -V, --version           Show version information
+
+EXIT STATUS
+    0   Successful conversion, help, version, or completion output
+    1   Invalid arguments, such as an unknown option, conflicting options, or an unsupported
+        completion shell
+    2   Invalid input, a format conflict, or ASONB output directed to a terminal
+    3   Failed conversion: the input is valid but cannot be represented in the output format
+    4   I/O error while reading the input or writing the output
+    5   No conversion was performed because the input already has the output format
+
+DESCRIPTION
+    Input extensions `.ason` and `.asonb` select ASON and ASONB, respectively; `.json` and
+    `.jsonc` inputs are rejected. Extensions are case-sensitive. A recognized input extension
+    takes precedence over the input header. Without one, the ASONB header selects binary input;
+    otherwise, the input is treated as ASON.
+
+    Output extensions `.ason` and `.asonb` select the output format. Without a recognized output
+    extension or a mode flag, the output format is the opposite of the input format.
+
+    Use `-t` to require ASONB input and produce ASON, or `-b` to require ASON input and produce
+    ASONB. The two flags cannot be combined and must agree with any recognized output extension.
+    If the input and output formats are the same, no conversion is performed.
+
+    If no input file is specified, input is read from standard input.
+
+    If no output file is specified, output is written to standard output.
+
+    ASONB output cannot be written directly to a terminal. An output file is created or truncated
+    before conversion and may be empty or partial on failure; use a different file from the input.
+
+EXAMPLES
+    * Convert an ASON file to ASONB
+      ason2b input.ason -o output.asonb
+
+    * Convert an ASONB file to ASON
+      ason2b input.asonb -o output.ason
+
+    * Convert ASON from standard input to an ASONB file
+      echo '{key: "value"}' | ason2b -o output.asonb
+
+    * Convert ASON from standard input to ASONB, then back to ASON
+      echo '{key: "value"}' | ason2b | ason2b

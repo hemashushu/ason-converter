@@ -70,6 +70,8 @@ fn stdin_conversion_help_version_and_completion() {
     );
     assert!(help_text.contains("-r, --reverse"));
     assert!(help_text.contains("-t, --text"));
+    assert!(help_text.contains("Select ASON output"));
+    assert!(!help_text.contains("the default for JSON input"));
     assert!(help_text.contains("-b, --binary"));
     assert!(help_text.contains("Input file (defaults to standard input)"));
     assert!(help_text.contains("Write output to this file (defaults to standard output)"));
@@ -77,14 +79,15 @@ fn stdin_conversion_help_version_and_completion() {
     assert!(help_text.contains("PowerShell"));
     assert_eq!(invoke(&["--version"], b"").status.code(), Some(0));
     let completion = invoke(&["--complete", "bash"], b"");
-    assert_eq!(completion.status.code(), Some(2));
+    assert_eq!(completion.status.code(), Some(0));
     assert!(!completion.stdout.is_empty());
 
-    assert_eq!(invoke(&["-r"], b"not json").status.code(), Some(1));
+    assert_eq!(invoke(&["-r"], b"not json").status.code(), Some(2));
+    assert_eq!(invoke(&["-r"], br#"[1, "two"]"#).status.code(), Some(3));
 }
 
 #[test]
-/// Checks that output flags conflicting with the output extension use the documented statuses.
+/// Checks the documented statuses for format conflicts, no-op conversions, and I/O failures.
 fn output_flag_and_extension_conflicts() {
     let directory = TempDirectory::new();
     let input_ason = directory.0.join("input.ason");
@@ -106,7 +109,7 @@ fn output_flag_and_extension_conflicts() {
         )
         .status
         .code(),
-        Some(3)
+        Some(2)
     );
     assert_eq!(
         invoke(
@@ -120,6 +123,24 @@ fn output_flag_and_extension_conflicts() {
         )
         .status
         .code(),
+        Some(2)
+    );
+    assert_eq!(
+        invoke(
+            &[
+                input_ason.to_str().unwrap(),
+                "-o",
+                output_ason.to_str().unwrap()
+            ],
+            b"",
+        )
+        .status
+        .code(),
+        Some(5)
+    );
+    let missing = directory.0.join("missing.json");
+    assert_eq!(
+        invoke(&[missing.to_str().unwrap()], b"").status.code(),
         Some(4)
     );
 }

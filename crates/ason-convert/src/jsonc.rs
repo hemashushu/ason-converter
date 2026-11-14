@@ -46,7 +46,7 @@ pub(crate) enum JsonInput {
 pub(crate) fn parse_jsonc(input: &str) -> Result<JsonInput> {
     let without_comments = strip_comments(input)?;
     let without_trailing_commas = strip_trailing_commas(&without_comments);
-    serde_json::from_str(&without_trailing_commas).map_err(Into::into)
+    serde_json::from_str(&without_trailing_commas).map_err(ConversionError::invalid_document)
 }
 
 /// Replaces line and block comments with whitespace while preserving string contents.
@@ -106,7 +106,9 @@ fn strip_comments(input: &str) -> Result<String> {
                 index += 1;
             }
             if !closed {
-                return Err(ConversionError("Unterminated JSONC block comment.".into()));
+                return Err(ConversionError::invalid_document(
+                    "Unterminated JSONC block comment.",
+                ));
             }
         } else {
             output.push(current);
@@ -114,7 +116,7 @@ fn strip_comments(input: &str) -> Result<String> {
         }
     }
 
-    String::from_utf8(output).map_err(|error| ConversionError(error.to_string()))
+    String::from_utf8(output).map_err(ConversionError::invalid_document)
 }
 
 /// Replaces commas immediately before `]` or `}` with spaces, except inside strings.
