@@ -26,8 +26,6 @@ const EXIT_INVALID_DOCUMENT: u8 = 2;
 const EXIT_FAILED_CONVERSION: u8 = 3;
 /// Exit status for a failure to read input or write output.
 const EXIT_IO_ERROR: u8 = 4;
-/// Exit status when the input already has the output format.
-const EXIT_NO_CONVERSION: u8 = 5;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 /// A format recognized by the command-line converter.
@@ -89,13 +87,13 @@ EXAMPLES
       ason2b input.ason -o output.asonb
 
     * Convert an ASONB file to ASON
-      ason2b input.asonb -o output.ason
+      ason2b -r input.asonb -o output.ason
 
     * Convert ASON from standard input to an ASONB file
       echo '{key: "value"}' | ason2b -o output.asonb
 
     * Convert ASON from standard input to ASONB, then back to ASON
-      echo '{key: "value"}' | ason2b | ason2b
+      echo '{key: "value"}' | ason2b | ason2b -r
 "#
 )]
 /// Arguments accepted by the `ason2b` command.
@@ -104,23 +102,9 @@ struct Ason2bArgs {
     #[arg(value_name = "INPUT", help = "Input file (defaults to standard input)")]
     input: Option<PathBuf>,
 
-    /// Requires ASONB input and selects ASON text output.
-    #[arg(
-        short = 't',
-        long = "text",
-        conflicts_with = "force_binary",
-        help = "Force conversion from ASONB to ASON"
-    )]
-    force_text: bool,
-
-    /// Requires ASON input and selects ASONB binary output.
-    #[arg(
-        short = 'b',
-        long = "binary",
-        conflicts_with = "force_text",
-        help = "Force conversion from ASON to ASONB"
-    )]
-    force_binary: bool,
+    /// Converts ASONB input to ASON output.
+    #[arg(short = 'r', long = "reverse", help = "Convert ASONB input to ASON")]
+    reverse: bool,
 
     /// Optional output file; standard output is used when this is omitted.
     #[arg(
@@ -192,75 +176,53 @@ fn emit_completion<T: CommandFactory>(shell: &str, name: &str) -> CliResult<()> 
     Ok(())
 }
 
-/// Determines the source and destination formats, then runs the requested ASON/ASONB conversion.
+/// Determines the conversion direction, validates the input and output, then runs it.
 ///
-/// A recognized file extension takes precedence over binary-header detection. Without an
-/// extension, the ASONB header determines the source format; otherwise the input is treated as
-/// ASON. Explicit mode flags and the output extension select the destination, with conflicts
-/// rejected before any conversion is written.
+/// The direction is ASON to ASONB by default, and ASONB to ASON with `-r`. A recognized input
+/// extension takes precedence over binary-header detection; without one, the ASONB header selects
+/// binary input and other input is treated as ASON. An input that does not match the direction,
+/// or an output file name not ending with `.asonb` (default) or `.ason` (`-r`), is rejected
+/// before the output is opened.
 fn run_ason2b_command(args: Ason2bArgs) -> CliResult<()> {
     let input = open_input(args.input.as_deref())?;
-    let source = input
+    let (source, destination) = if args.reverse {
+        (Format::Asonb, Format::Ason)
+    } else {
+        (Format::Ason, Format::Asonb)
+    };
+    let detected = input
         .extension_format
         .unwrap_or(if input.has_binary_header {
             Format::Asonb
         } else {
             Format::Ason
         });
-    if source == Format::Json {
+    if detected == Format::Json {
         return Err(CliError::new(
             EXIT_INVALID_DOCUMENT,
             "ason2b does not accept JSON input.",
         ));
     }
-    if args.force_text && source == Format::Ason {
-        return Err(CliError::new(
-            EXIT_INVALID_DOCUMENT,
-            "Input is ASON while -t/--text was specified.",
-        ));
-    }
-    if args.force_binary && source == Format::Asonb {
-        return Err(CliError::new(
-            EXIT_INVALID_DOCUMENT,
-            "Input is ASONB while -b/--binary was specified.",
-        ));
+    if detected != source {
+        let message = if args.reverse {
+            "Input is ASON while -r/--reverse was specified."
+        } else {
+            "Input is ASONB; use -r/--reverse to convert ASONB to ASON."
+        };
+        return Err(CliError::new(EXIT_INVALID_DOCUMENT, message));
     }
 
-    let output_extension = args.output.as_deref().and_then(output_extension_format);
-    if args.force_text && output_extension == Some(Format::Asonb) {
-        return Err(CliError::new(
-            EXIT_INVALID_DOCUMENT,
-            "-t conflicts with an .asonb output path.",
-        ));
-    }
-    if args.force_binary && output_extension == Some(Format::Ason) {
-        return Err(CliError::new(
-            EXIT_INVALID_DOCUMENT,
-            "-b conflicts with an .ason output path.",
-        ));
-    }
-    let destination = if args.force_text {
-        Format::Ason
-    } else if args.force_binary {
-        Format::Asonb
-    } else if let Some(format) = output_extension {
-        format
-    } else if source == Format::Asonb {
-        Format::Ason
-    } else {
-        Format::Asonb
-    };
-    if destination == Format::Json {
-        return Err(CliError::new(
-            EXIT_INVALID_DOCUMENT,
-            "ason2b output must use .ason or .asonb.",
-        ));
-    }
-    if source == destination {
-        return Err(CliError::new(
-            EXIT_NO_CONVERSION,
-            "No conversion was performed.",
-        ));
+    if args
+        .output
+        .as_deref()
+        .is_some_and(|path| output_extension_format(path) != Some(destination))
+    {
+        let message = if args.reverse {
+            "The output file name must end with .ason for ASON output (-r/--reverse)."
+        } else {
+            "The output file name must end with .asonb for ASONB output; use -r/--reverse for ASON."
+        };
+        return Err(CliError::new(EXIT_INVALID_DOCUMENT, message));
     }
     let (mut output, output_is_terminal) = output_writer(args.output.as_deref())?;
     if let Some(error) = binary_terminal_write_error(destination, output_is_terminal) {
@@ -387,28 +349,7 @@ fn report_error(error: CliError) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ason2bArgs, EXIT_INVALID_DOCUMENT, Format, binary_terminal_write_error};
-    use clap::Parser;
-
-    #[test]
-    /// Checks that `ason2b` accepts either mode flag but rejects using both together.
-    fn ason2b_text_and_binary_flags_are_mutually_exclusive() {
-        let text_short = Ason2bArgs::try_parse_from(["ason2b", "-t"]).unwrap();
-        assert!(text_short.force_text);
-
-        let text = Ason2bArgs::try_parse_from(["ason2b", "--text"]).unwrap();
-        assert!(text.force_text);
-        assert!(!text.force_binary);
-
-        let binary = Ason2bArgs::try_parse_from(["ason2b", "--binary"]).unwrap();
-        assert!(!binary.force_text);
-        assert!(binary.force_binary);
-
-        let binary_short = Ason2bArgs::try_parse_from(["ason2b", "-b"]).unwrap();
-        assert!(binary_short.force_binary);
-
-        assert!(Ason2bArgs::try_parse_from(["ason2b", "-t", "-b"]).is_err());
-    }
+    use super::{EXIT_INVALID_DOCUMENT, Format, binary_terminal_write_error};
 
     #[test]
     /// Ensures ASONB bytes are not sent to an interactive terminal.

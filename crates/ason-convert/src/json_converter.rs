@@ -35,9 +35,11 @@ struct Node {
 
 /// Converts a JSON or JSONC document into ASON text using inferred types.
 ///
-/// `input` may contain `//` and `/* ... */` comments and trailing commas, using the same
-/// preprocessing as [`format_json`]. The entire document is parsed in memory, and comments and
-/// original formatting are not preserved. Object keys must be unique, even in nested objects.
+/// `input` may contain `//` and `/* ... */` comments and trailing commas. Line comments extend
+/// to a line feed or the end of input; block comments cannot be nested. Both are replaced with
+/// whitespace before parsing. A comma followed only by ASCII whitespace and `]` or `}` is
+/// removed. Neither preprocessing pass changes quoted string contents. The entire document is
+/// parsed in memory, and comments and original formatting are not preserved. Object keys must be unique, even in nested objects.
 ///
 /// Integer tokens within 64-bit ranges, except `-0`, become `i32`, `i64`, or `u64` according
 /// to their range. Decimal and exponent forms, `-0`, and integers outside those integer ranges
@@ -122,41 +124,6 @@ pub fn json_to_asonb(input: &str) -> Result<Vec<u8>> {
     asonb::ser_value_to_writer(&schema, &value, &mut output)
         .map_err(ConversionError::unconvertible)?;
     Ok(output)
-}
-
-/// Parses JSON or JSONC and returns pretty-printed JSON.
-///
-/// Line comments extend to a line feed or the end of input; block comments cannot be nested.
-/// Both are replaced with whitespace before parsing. A comma followed only by ASCII whitespace
-/// and `]` or `}` is removed. Neither preprocessing pass changes quoted string contents. This
-/// also accepts `[,]` and `{,}` as empty containers. Object key order is retained. Unlike
-/// [`json_to_ason`], this does not infer ASON types, so empty objects and heterogeneous arrays
-/// are supported.
-///
-/// The original whitespace, string escaping, and numeric spelling are not retained. Numbers
-/// parsed as `f64`, including integers outside the supported 64-bit integer ranges, may lose
-/// precision.
-///
-/// # Errors
-///
-/// Returns an error if parsing fails, including for duplicate keys, invalid Unicode escapes, or
-/// numbers outside the parser's representable range, or if JSON serialization fails.
-///
-/// # Example
-///
-/// ```
-/// use ason_convert::format_json;
-///
-/// let json = format_json("{ // comment\n \"items\": [1, true, {},], }")?;
-/// assert_eq!(json, "{\n  \"items\": [\n    1,\n    true,\n    {}\n  ]\n}");
-/// assert_eq!(format_json("[,]")?, "[]");
-/// assert_eq!(format_json("{,}")?, "{}");
-/// assert!(format_json(r#"{"key": 1, "key": 2}"#).is_err());
-/// # Ok::<(), ason_convert::ConversionError>(())
-/// ```
-pub fn format_json(input: &str) -> Result<String> {
-    let value = json_to_json_value(crate::jsonc::parse_jsonc(input)?);
-    Ok(serde_json::to_string_pretty(&value)?)
 }
 
 /// Converts an ASON value to pretty-printed JSON.
@@ -255,7 +222,7 @@ pub fn asonb_to_json(input: &[u8]) -> Result<String> {
 /// dependency to run the example in another crate.
 ///
 /// ```
-/// use ason_convert::{asonb_reader_to_json, format_json};
+/// use ason_convert::asonb_reader_to_json;
 ///
 /// let mut binary = Vec::new();
 /// {
@@ -266,11 +233,8 @@ pub fn asonb_to_json(input: &[u8]) -> Result<String> {
 ///
 /// let mut output = Vec::new();
 /// asonb_reader_to_json(binary.as_slice(), &mut output)?;
-/// let json = std::str::from_utf8(&output).unwrap();
-/// assert_eq!(
-///     format_json(json)?,
-///     "{\n  \"variant\": \"Ok\",\n  \"value\": [\n    1,\n    2\n  ]\n}"
-/// );
+/// let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+/// assert_eq!(json, serde_json::json!({"variant": "Ok", "value": [1, 2]}));
 ///
 /// let mut partial = Vec::new();
 /// assert!(asonb_reader_to_json(&binary[..binary.len() - 4], &mut partial).is_err());
@@ -436,32 +400,6 @@ fn number_from_f64(value: f64) -> Result<JsonValue> {
 /// Serializes a JSON value using the standard pretty-printed layout.
 fn json_to_pretty_string(value: &JsonValue) -> Result<String> {
     Ok(serde_json::to_string_pretty(value)?)
-}
-
-/// Converts the ordered parser representation into `serde_json`'s output representation.
-///
-/// This helper is used for JSON formatting, where no ASON-specific type inference is needed.
-fn json_to_json_value(input: JsonInput) -> JsonValue {
-    match input {
-        JsonInput::Null => JsonValue::Null,
-        JsonInput::Bool(value) => JsonValue::Bool(value),
-        JsonInput::Signed(value) => JsonValue::Number(Number::from(value)),
-        JsonInput::Unsigned(value) => JsonValue::Number(Number::from(value)),
-        JsonInput::Float(value) => Number::from_f64(value)
-            .map(JsonValue::Number)
-            .unwrap_or(JsonValue::Null),
-        JsonInput::String(value) => JsonValue::String(value),
-        JsonInput::Array(values) => {
-            JsonValue::Array(values.into_iter().map(json_to_json_value).collect())
-        }
-        JsonInput::Object(fields) => {
-            let mut object = Map::new();
-            for (key, value) in fields {
-                object.insert(key, json_to_json_value(value));
-            }
-            JsonValue::Object(object)
-        }
-    }
 }
 
 /// Infers an ASON value and schema type from one parsed JSON value.

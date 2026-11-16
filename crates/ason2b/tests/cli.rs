@@ -61,8 +61,9 @@ fn help_version_and_completion() {
         String::from_utf8_lossy(&help.stdout),
         String::from_utf8_lossy(&help.stderr)
     );
-    assert!(help_text.contains("-t, --text"));
-    assert!(help_text.contains("-b, --binary"));
+    assert!(help_text.contains("-r, --reverse"));
+    assert!(!help_text.contains("-t, --text"));
+    assert!(!help_text.contains("-b, --binary"));
     assert!(help_text.contains("Input file (defaults to standard input)"));
     assert!(help_text.contains("Write output to this file (defaults to standard output)"));
     assert!(help_text.contains("Print a completion script to standard output"));
@@ -70,11 +71,21 @@ fn help_version_and_completion() {
     assert_eq!(invoke(&["--version"], b"").status.code(), Some(0));
     let completion = invoke(&["--complete", "zsh"], b"");
     assert_eq!(completion.status.code(), Some(0));
-    assert!(!completion.stdout.is_empty());
+    let completion_text = String::from_utf8_lossy(&completion.stdout);
+    assert!(completion_text.contains("--reverse"));
+    assert!(!completion_text.contains("--text"));
+    assert!(!completion_text.contains("--binary"));
     assert_eq!(
         invoke(&["--complete", "unknown"], b"").status.code(),
         Some(1)
     );
+    for old_option in ["-t", "--text", "-b", "--binary"] {
+        assert_eq!(
+            invoke(&[old_option], b"").status.code(),
+            Some(1),
+            "{old_option} must be rejected"
+        );
+    }
 }
 
 #[test]
@@ -99,26 +110,15 @@ fn extension_detection_binary_round_trip_and_exit_statuses() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(&fs::read(&output_asonb).unwrap()[..8], b"\0ASONB\0\x01");
 
-    let forced_asonb = directory.0.join("forced.asonb");
-    let output = invoke(
-        &[
-            "--binary",
-            input_ason.to_str().unwrap(),
-            "-o",
-            forced_asonb.to_str().unwrap(),
-        ],
-        b"",
-    );
-    assert_eq!(output.status.code(), Some(0));
-
     for args in [
         vec![
+            "-r",
             output_asonb.to_str().unwrap(),
             "-o",
             output_ason.to_str().unwrap(),
         ],
         vec![
-            "--text",
+            "--reverse",
             output_asonb.to_str().unwrap(),
             "-o",
             output_ason.to_str().unwrap(),
@@ -132,32 +132,70 @@ fn extension_detection_binary_round_trip_and_exit_statuses() {
         );
     }
 
-    let status = |args: &[&str]| invoke(args, b"").status.code();
-    assert_eq!(status(&["-b", output_asonb.to_str().unwrap()]), Some(2));
-    assert_eq!(status(&["--text", input_ason.to_str().unwrap()]), Some(2));
-    assert_eq!(
-        status(&[
-            "-t",
+    let reversed_ason = invoke(&["--reverse", input_ason.to_str().unwrap()], b"");
+    assert_eq!(reversed_ason.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&reversed_ason.stderr).contains("-r/--reverse"));
+
+    let wrong_reverse_output = invoke(
+        &[
+            "-r",
             output_asonb.to_str().unwrap(),
             "-o",
             output_asonb.to_str().unwrap(),
-        ]),
-        Some(2)
+        ],
+        b"",
     );
-    assert_eq!(status(&["-t", "-b", input_ason.to_str().unwrap()]), Some(1));
+    assert_eq!(wrong_reverse_output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&wrong_reverse_output.stderr).contains("-r/--reverse"));
+
+    let status = |args: &[&str]| invoke(args, b"").status.code();
     assert_eq!(status(&[input_json.to_str().unwrap()]), Some(2));
-    assert_eq!(
-        status(&[
+    fs::write(&output_ason, "keep").unwrap();
+    let wrong_default_output = invoke(
+        &[
             input_ason.to_str().unwrap(),
             "-o",
             output_ason.to_str().unwrap(),
-        ]),
-        Some(5)
+        ],
+        b"",
     );
+    assert_eq!(wrong_default_output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&wrong_default_output.stderr).contains("-r/--reverse"));
 
-    let stdin_status = |stdin: &[u8]| invoke(&["-o", forced_asonb.to_str().unwrap()], stdin);
+    let default_binary_input = invoke(&[output_asonb.to_str().unwrap()], b"");
+    assert_eq!(default_binary_input.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&default_binary_input.stderr).contains("-r/--reverse"));
+    assert_eq!(
+        invoke(&[], &fs::read(&output_asonb).unwrap()).status.code(),
+        Some(2)
+    );
+    assert_eq!(fs::read_to_string(&output_ason).unwrap(), "keep");
+
+    for name in ["out.json", "out.jsonc", "out.txt", "out"] {
+        let path = directory.0.join(name);
+        assert_eq!(
+            status(&[input_ason.to_str().unwrap(), "-o", path.to_str().unwrap()]),
+            Some(2)
+        );
+        assert!(!path.exists());
+    }
+
+    let stdin_asonb = directory.0.join("stdin.asonb");
+    let stdin_status = |stdin: &[u8]| invoke(&["-o", stdin_asonb.to_str().unwrap()], stdin);
     assert_eq!(stdin_status(b"{name: ").status.code(), Some(2));
     assert_eq!(stdin_status(b"[1, \"two\"]").status.code(), Some(3));
     let missing = directory.0.join("missing.ason");
     assert_eq!(status(&[missing.to_str().unwrap()]), Some(4));
+}
+
+#[test]
+/// Converts through standard streams using the default and reverse directions.
+fn standard_stream_round_trip() {
+    let binary = invoke(&[], b"{name: \"Ada\"}");
+    assert_eq!(binary.status.code(), Some(0));
+    assert!(binary.stdout.starts_with(b"\0ASONB\0\x01"));
+
+    let text = invoke(&["-r"], &binary.stdout);
+    assert_eq!(text.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&text.stdout).contains("name: \"Ada\""));
 }

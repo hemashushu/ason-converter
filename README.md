@@ -80,11 +80,7 @@ Both require a recent stable Rust toolchain.
 
 ### 3.2 Commands
 
-Both commands accept an optional input file and `-o OUTPUT`. When omitted, they read from standard input and write to standard output. The output option is `-o`; `--output` is not supported. An output file is created or truncated, even if conversion subsequently fails, so use a different file from the input.
-
-Recognized extensions are case-sensitive and take precedence over input contents. Without a recognized input extension, the commands check for the ASONB header and otherwise treat the input as ASON, except when `ason2j -r` selects JSON. ASONB output must go to a file or pipe, not directly to a terminal.
-
-Both commands provide `-h` / `--help`, `-V` / `--version`, and `--complete SHELL` to print a completion script for `bash`, `zsh`, `fish`, or `powershell`. Their `-t` and `-b` options are mutually exclusive.
+Both commands accept an optional input file (`INPUT`) and `-o OUTPUT`. If `INPUT` is omitted, the command reads standard input; if `-o` is omitted, it writes standard output. Where a mode uses content-based input detection, recognized extensions are case-sensitive and take precedence over the ASONB header. Format conflicts are checked before an output file is opened, so a conflicting output is not created or truncated. An output file is created or truncated before conversion and may be empty or partial if conversion fails; use a different file from the input.
 
 #### 3.2.1 `ason2b`
 
@@ -92,18 +88,26 @@ Both commands provide `-h` / `--help`, `-V` / `--version`, and `--complete SHELL
 ason2b [OPTIONS] [INPUT]
 ```
 
-`ason2b` converts ASON to ASONB and vice versa. It recognizes `.ason` and `.asonb` input and output extensions and rejects `.json` and `.jsonc` inputs. Unless an output extension or flag selects a format, the output is the opposite of the detected input format.
+By default, `ason2b` converts ASON to ASONB. The `-r` option reverses the direction and converts ASONB to ASON. It recognizes `.ason` and `.asonb` input extensions; `.json` and `.jsonc` inputs are rejected. If the input has no recognized extension, an ASONB header identifies binary input; otherwise, the input is treated as ASON. The detected input format must match the selected direction.
 
-- `-b`, `--binary`: require ASON input and produce ASONB.
-- `-t`, `--text`: require ASONB input and produce ASON.
+- `-r`, `--reverse`: convert ASONB input to ASON.
+- `-o OUTPUT`: write to a file. The file name must end with `.asonb` by default or `.ason` with `-r`; otherwise, conversion fails with exit status 2. This check does not apply when output is written to standard output.
+- `--complete SHELL`: print a completion script for `bash`, `zsh`, `fish`, or `powershell`.
 
-The selected output format must not conflict with a recognized output extension. Examples:
+Examples:
 
 ```sh
+# Convert input.ason to ASONB
 ason2b input.ason -o output.asonb
-ason2b input.asonb -o output.ason
-printf '%s\n' '{name: "Ada"}' | ason2b | ason2b
+
+# Convert input.asonb to ASON
+ason2b -r input.asonb -o output.ason
+
+# Convert ASON from standard input to ASONB and back to ASON
+printf '%s\n' '{name: "Ada"}' | ason2b | ason2b -r
 ```
+
+ASONB output cannot be written directly to a terminal; redirect it, pipe it, or use an output file. Input or output format conflicts and invalid documents return exit status 2. Unknown options return exit status 1.
 
 For the detailed command reference in the checkout, see [`ason2b.txt`](./crates/ason2b/docs/ason2b.txt).
 
@@ -113,37 +117,50 @@ For the detailed command reference in the checkout, see [`ason2b.txt`](./crates/
 ason2j [OPTIONS] [INPUT]
 ```
 
-`ason2j` recognizes `.ason`, `.asonb`, `.json`, and `.jsonc` input and output extensions. It converts ASON or ASONB to JSON, JSON or JSONC to ASON or ASONB, and can also convert directly between ASON and ASONB.
+`ason2j` recognizes the case-sensitive input extensions `.ason`, `.asonb`, `.json`, and `.jsonc`. Without `-r`, it strictly converts ASON or ASONB to JSON. With `-r`, it converts JSON or JSONC to ASON, or to ASONB when `-b` is also specified. Output extensions never select or change the conversion direction or format. JSONC comments and trailing commas are discarded. This command does not convert between ASON and ASONB (use `ason2b` instead).
 
-- `-r`, `--reverse`: treat input without a recognized extension as JSON/JSONC and default to ASON output. A recognized `.ason` or `.asonb` input conflicts with `-r`.
-- `-t`, `--text`: select ASON output.
-- `-b`, `--binary`: select ASONB output.
+- `-r`, `--reverse`: require JSON or JSONC input and produce ASON. Input without a recognized extension is treated as JSON/JSONC in this mode.
+- `-b`, `--binary`: produce ASONB instead of ASON; requires `-r`.
+- `-o OUTPUT`: write to a file whose name matches the selected output format: `.json` by default, `.ason` with `-r`, or `.asonb` with `-r -b`. Any other extension (including `.jsonc`), a missing extension, or an extension with different casing is a format conflict (exit status 2). The output extension is not required when writing to standard output.
+- `--complete SHELL`: print a completion script for `bash`, `zsh`, `fish`, or `powershell`.
 
-An output flag must agree with any recognized output extension. Without a flag or recognized output extension, the output is ASON when `-r` is present and JSON otherwise. In particular, `ason2j input.json` alone reports that no conversion was performed; use `-r`, `-t`, or an ASON/ASONB output extension.
+Examples:
 
 ```sh
+# Convert input.ason to JSON
 ason2j input.ason -o output.json
+
+# Convert input.asonb to JSON
 ason2j input.asonb -o output.json
-ason2j input.jsonc -o output.ason
-ason2j input.json -o output.asonb
+
+# Convert input.jsonc to ASON
+ason2j -r input.jsonc -o output.ason
+
+# Convert input.json to ASONB
+ason2j -r -b input.json -o output.asonb
+
+# Convert JSON from standard input to ASON
 printf '%s\n' '{"name": "Ada"}' | ason2j -r
+
+# Convert JSON from standard input to ASONB and back to ASON
 printf '%s\n' '{"name": "Ada"}' | ason2j -r -b | ason2j
 ```
+
+Without `-r`, input must be ASON or ASONB; a `.json` or `.jsonc` input is a format conflict. With `-r`, input must be JSON or JSONC; `.ason` and `.asonb` inputs are conflicts. A recognized input extension takes precedence over the ASONB header; without one, the default (non-reverse) mode uses the header to distinguish ASONB from ASON. `-b` without `-r` is an invalid-arguments error (exit status 1). ASONB output cannot be written directly to a terminal.
 
 For the detailed command reference in the checkout, see [`ason2j.txt`](./crates/ason2j/docs/ason2j.txt).
 
 #### 3.2.3 Exit Status
 
-Both commands use these exit statuses:
+Both commands return these exit statuses:
 
 | Status | Meaning |
 |--------|---------|
-| `0` | Success, including help, version, or completion output |
-| `1` | Invalid arguments or unsupported completion shell |
-| `2` | Invalid input, a format conflict, or attempted ASONB output to a terminal |
-| `3` | Valid input that cannot be represented in the output format |
-| `4` | Input/output error |
-| `5` | Input and output have the same format; no conversion was performed |
+| `0`    | Command succeeded, including conversion, help, version, or completion-script output. |
+| `1`    | Invalid command-line arguments, such as an unknown option or a required-option error, or an unsupported completion shell. |
+| `2`    | Invalid input, an input/output format conflict (including a mismatched output extension), or an attempt to write ASONB directly to a terminal. Format conflicts are detected before the output is opened. |
+| `3`    | The input is valid, but its value cannot be represented in the selected output format. |
+| `4`    | An I/O error while opening or reading input, or creating or writing output. |
 
 ## 4 Library Usage
 
@@ -153,11 +170,11 @@ Add the library to your project:
 cargo add ason-convert
 ```
 
-To use the current workspace source instead, add a path dependency to your project's `Cargo.toml`, adjusting the path relative to that file:
+Or add the dependency to your project's `Cargo.toml`:
 
 ```toml
 [dependencies]
-ason-convert = { path = "../ason-converter/crates/ason-convert" }
+ason-convert = "1.5.0"  # Use the latest version of the ason-convert library
 ```
 
 For example, convert ASON to ASONB, back to ASON, and then to JSON:
@@ -179,17 +196,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Function | Input | Output |
 |----------|-------|--------|
-| `ason_to_asonb` | ASON `&str` | ASONB `Vec<u8>` |
-| `asonb_to_ason` | ASONB `&[u8]` | ASON `String` |
-| `ason_to_json` | ASON `&str` | JSON `String` |
-| `asonb_to_json` | ASONB `&[u8]` | JSON `String` |
-| `json_to_ason` | JSON/JSONC `&str` | ASON `String` |
-| `json_to_asonb` | JSON/JSONC `&str` | ASONB `Vec<u8>` |
-| `format_json` | JSON/JSONC `&str` | formatted JSON `String` |
-| `asonb_reader_to_ason` | ASONB `Read` | ASON written to `Write` |
-| `asonb_reader_to_json` | ASONB `Read` | JSON written to `Write` |
-
-`format_json` removes comments and trailing commas without inferring ASON types, so it also accepts empty objects and heterogeneous arrays. The `ason2j` CLI does not format JSON to JSON: it reports a no-op when the input and output formats match.
+| `ason_to_asonb`        | ASON `&str`       | ASONB `Vec<u8>`         |
+| `ason_to_json`         | ASON `&str`       | JSON `String`           |
+| `asonb_to_ason`        | ASONB `&[u8]`     | ASON `String`           |
+| `asonb_to_json`        | ASONB `&[u8]`     | JSON `String`           |
+| `asonb_reader_to_ason` | ASONB `Read`      | ASON written to `Write` |
+| `asonb_reader_to_json` | ASONB `Read`      | JSON written to `Write` |
+| `json_to_ason`         | JSON/JSONC `&str` | ASON `String`           |
+| `json_to_asonb`        | JSON/JSONC `&str` | ASONB `Vec<u8>`         |
 
 The functions return `Result<_, ConversionError>`. `ConversionError` implements `std::error::Error` and can be propagated with `?`. `error.kind()` distinguishes `InvalidDocument`, `Unconvertible`, and `Io` via the non-exhaustive `ConversionErrorKind` enum. Include a wildcard arm when matching it. Error messages are for display, not stable programmatic matching.
 

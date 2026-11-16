@@ -69,9 +69,7 @@ fn stdin_conversion_help_version_and_completion() {
         String::from_utf8_lossy(&help.stderr)
     );
     assert!(help_text.contains("-r, --reverse"));
-    assert!(help_text.contains("-t, --text"));
-    assert!(help_text.contains("Select ASON output"));
-    assert!(!help_text.contains("the default for JSON input"));
+    assert!(!help_text.contains("-t, --text"));
     assert!(help_text.contains("-b, --binary"));
     assert!(help_text.contains("Input file (defaults to standard input)"));
     assert!(help_text.contains("Write output to this file (defaults to standard output)"));
@@ -80,27 +78,110 @@ fn stdin_conversion_help_version_and_completion() {
     assert_eq!(invoke(&["--version"], b"").status.code(), Some(0));
     let completion = invoke(&["--complete", "bash"], b"");
     assert_eq!(completion.status.code(), Some(0));
-    assert!(!completion.stdout.is_empty());
+    let completion_text = String::from_utf8_lossy(&completion.stdout);
+    assert!(completion_text.contains("--binary"));
+    assert!(!completion_text.contains("--text"));
+
+    for option in ["-t", "--text"] {
+        assert_eq!(invoke(&[option], b"").status.code(), Some(1));
+        assert_eq!(invoke(&["-r", option], b"").status.code(), Some(1));
+    }
 
     assert_eq!(invoke(&["-r"], b"not json").status.code(), Some(2));
     assert_eq!(invoke(&["-r"], br#"[1, "two"]"#).status.code(), Some(3));
 }
 
 #[test]
-/// Checks the documented statuses for format conflicts, no-op conversions, and I/O failures.
+/// Keeps the default direction fixed and rejects non-JSON output names without modifying files.
+fn default_conversion_only_produces_json() {
+    let directory = TempDirectory::new();
+    let ason = "{name: \"Ada\"}";
+    let asonb = ason_convert::ason_to_asonb(ason).unwrap();
+    let expected = serde_json::json!({"name": "Ada"});
+
+    for (name, bytes) in [
+        ("input.ason", ason.as_bytes()),
+        ("input.asonb", asonb.as_slice()),
+    ] {
+        let input = directory.0.join(name);
+        fs::write(&input, bytes).unwrap();
+        let output = directory.0.join("output.json");
+        let result = invoke(
+            &[input.to_str().unwrap(), "-o", output.to_str().unwrap()],
+            b"",
+        );
+        assert_eq!(result.status.code(), Some(0));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&output).unwrap()).unwrap(),
+            expected
+        );
+
+        let result = invoke(&[], bytes);
+        assert_eq!(result.status.code(), Some(0));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap(),
+            expected
+        );
+
+        for name in [
+            "out.ason",
+            "out.asonb",
+            "out.jsonc",
+            "out.txt",
+            "out.JSON",
+            "out",
+        ] {
+            let output = directory.0.join(name);
+            let args = [input.to_str().unwrap(), "-o", output.to_str().unwrap()];
+            for existing in [false, true] {
+                if existing {
+                    fs::write(&output, "keep").unwrap();
+                }
+                let result = invoke(&args, b"");
+                assert_eq!(result.status.code(), Some(2));
+                assert!(String::from_utf8_lossy(&result.stderr).contains(".json"));
+                assert!(result.stdout.is_empty());
+                if existing {
+                    assert_eq!(fs::read(&output).unwrap(), b"keep");
+                    fs::remove_file(&output).unwrap();
+                } else {
+                    assert!(!output.exists());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+/// Checks the documented statuses for format conflicts, `-r` defaults, and I/O failures.
 fn output_flag_and_extension_conflicts() {
     let directory = TempDirectory::new();
-    let input_ason = directory.0.join("input.ason");
     let input_json = directory.0.join("input.json");
+    let input_jsonc = directory.0.join("input.jsonc");
     let output_ason = directory.0.join("output.ason");
     let output_asonb = directory.0.join("output.asonb");
-    fs::write(&input_ason, "{name: \"Ada\"}").unwrap();
     fs::write(&input_json, r#"{"name":"Ada"}"#).unwrap();
+    fs::write(&input_jsonc, r#"{/* comment */"name":"Ada",}"#).unwrap();
 
     assert_eq!(
         invoke(
             &[
-                input_ason.to_str().unwrap(),
+                input_json.to_str().unwrap(),
+                "-b",
+                "-o",
+                output_asonb.to_str().unwrap(),
+            ],
+            b"",
+        )
+        .status
+        .code(),
+        Some(1)
+    );
+    assert_eq!(
+        invoke(
+            &[
+                input_json.to_str().unwrap(),
+                "-r",
                 "-b",
                 "-o",
                 output_ason.to_str().unwrap(),
@@ -115,7 +196,7 @@ fn output_flag_and_extension_conflicts() {
         invoke(
             &[
                 input_json.to_str().unwrap(),
-                "-t",
+                "-r",
                 "-o",
                 output_asonb.to_str().unwrap(),
             ],
@@ -125,24 +206,108 @@ fn output_flag_and_extension_conflicts() {
         .code(),
         Some(2)
     );
-    assert_eq!(
-        invoke(
-            &[
-                input_ason.to_str().unwrap(),
-                "-o",
-                output_ason.to_str().unwrap()
-            ],
-            b"",
-        )
-        .status
-        .code(),
-        Some(5)
-    );
+    assert!(!output_ason.exists());
+    assert!(!output_asonb.exists());
+    for (flags, output, required_extension) in [
+        (vec!["-r", "-b"], &output_ason, ".asonb"),
+        (vec!["-r"], &output_asonb, ".ason"),
+    ] {
+        fs::write(output, "keep").unwrap();
+        let mut args = flags;
+        args.extend([input_json.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+        let result = invoke(&args, b"");
+        assert_eq!(result.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&result.stderr).contains(required_extension));
+        assert_eq!(fs::read(output).unwrap(), b"keep");
+    }
+    for input in [&input_json, &input_jsonc] {
+        assert_eq!(
+            invoke(&[input.to_str().unwrap()], b"").status.code(),
+            Some(2)
+        );
+    }
     let missing = directory.0.join("missing.json");
     assert_eq!(
         invoke(&[missing.to_str().unwrap()], b"").status.code(),
         Some(4)
     );
+
+    let output_json = directory.0.join("output.json");
+    fs::write(&output_json, "keep").unwrap();
+    assert_eq!(
+        invoke(
+            &[
+                "-r",
+                input_json.to_str().unwrap(),
+                "-o",
+                output_json.to_str().unwrap()
+            ],
+            b"",
+        )
+        .status
+        .code(),
+        Some(2)
+    );
+    assert_eq!(fs::read_to_string(&output_json).unwrap(), "keep");
+
+    let reversed = invoke(&["-r", input_json.to_str().unwrap()], b"");
+    assert_eq!(reversed.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&reversed.stdout).contains("name: \"Ada\""));
+
+    let reversed_file = invoke(
+        &[
+            "--reverse",
+            input_jsonc.to_str().unwrap(),
+            "-o",
+            output_ason.to_str().unwrap(),
+        ],
+        b"",
+    );
+    assert_eq!(reversed_file.status.code(), Some(0));
+    assert!(
+        fs::read_to_string(&output_ason)
+            .unwrap()
+            .contains("name: \"Ada\"")
+    );
+
+    let binary_stdout = invoke(&["--reverse", "--binary"], &fs::read(&input_jsonc).unwrap());
+    assert_eq!(binary_stdout.status.code(), Some(0));
+    assert!(binary_stdout.stdout.starts_with(b"\0ASONB\0\x01"));
+    let round_trip = invoke(&[], &binary_stdout.stdout);
+    assert_eq!(round_trip.status.code(), Some(0));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&round_trip.stdout).unwrap(),
+        serde_json::json!({"name": "Ada"})
+    );
+
+    for (args, name) in [
+        (vec!["-r", input_json.to_str().unwrap()], "out.txt"),
+        (vec!["-r", "-b", input_json.to_str().unwrap()], "out"),
+    ] {
+        let path = directory.0.join(name);
+        let mut args = args;
+        args.extend(["-o", path.to_str().unwrap()]);
+        assert_eq!(invoke(&args, b"").status.code(), Some(2));
+        assert!(!path.exists());
+    }
+
+    let reversed_binary = directory.0.join("reversed.asonb");
+    assert_eq!(
+        invoke(
+            &[
+                "-r",
+                "-b",
+                input_json.to_str().unwrap(),
+                "-o",
+                reversed_binary.to_str().unwrap()
+            ],
+            b"",
+        )
+        .status
+        .code(),
+        Some(0)
+    );
+    assert_eq!(&fs::read(&reversed_binary).unwrap()[..8], b"\0ASONB\0\x01");
 }
 
 #[test]

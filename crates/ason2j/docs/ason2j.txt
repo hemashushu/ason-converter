@@ -8,9 +8,8 @@ ARGUMENTS
     INPUT                   Input file (defaults to standard input)
 
 OPTIONS
-    -r, --reverse           Treat input without a recognized extension as JSON
-    -t, --text              Select ASON output
-    -b, --binary            Select ASONB output
+    -r, --reverse           Convert JSON/JSONC input to ASON (use -b for ASONB)
+    -b, --binary            Select ASONB output (requires -r)
     -o, --output OUTPUT     Write output to this file (defaults to standard output)
         --complete SHELL    Print a completion script to standard output
                             Supported shells: bash, zsh, fish, PowerShell
@@ -19,32 +18,41 @@ OPTIONS
 
 EXIT STATUS
     0   Successful conversion, help, version, or completion output
-    1   Invalid arguments, such as an unknown option, conflicting options, or an unsupported
+    1   Invalid arguments, such as an unknown option, `-b` without `-r`, or an unsupported
         completion shell
     2   Invalid input, a format conflict, or ASONB output directed to a terminal
     3   Failed conversion: the input is valid but cannot be represented in the output format
     4   I/O error while reading the input or writing the output
-    5   No conversion was performed because the input already has the output format
 
 DESCRIPTION
-    The command converts between ASON/ASONB and JSON, accepts JSONC input, and can also convert
-    directly between ASON and ASONB. JSONC comments and trailing commas are discarded; JSON
-    output is formatted without them.
+    The command converts ASON/ASONB to JSON, or, with `-r`, JSON/JSONC to ASON/ASONB.
+    JSONC comments and trailing commas are discarded.
 
     The extensions `.json` and `.jsonc` indicate JSON, `.ason` indicates ASON, and `.asonb`
     indicates ASONB. Extensions are case-sensitive.
 
-    A recognized input extension takes precedence over the input header. Without one, `-r` treats
-    the input as JSON/JSONC; otherwise, the ASONB header selects binary input and other input is
-    treated as ASON. The `-r` option conflicts with recognized `.ason` or `.asonb` input.
+    Without `-r`, the input must be ASON or ASONB and the output is always JSON. The output
+    file extension does not select a different conversion direction or output format. If an
+    output file is specified, its name must end with `.json`; otherwise, the command exits
+    with status 2 before creating or truncating it. A recognized input extension takes precedence
+    over the input header; without one, the ASONB header selects binary input and other input
+    is treated as ASON. A `.json`/`.jsonc` input is a format conflict.
 
-    Use `-t` to select ASON output or `-b` to select ASONB output. The two flags cannot be
-    combined and must agree with any recognized output extension. Without either flag, a
-    recognized output extension selects the format. Otherwise, output defaults to ASON with
-    `-r`, or to JSON without it.
+    With `-r`, the input must be JSON or JSONC and the output is ASON. Add `-b` to produce ASONB
+    instead. The output file extension does not select the output format. Input without a
+    recognized extension is treated as JSON/JSONC. An `.ason`/`.asonb` input is a format conflict.
+    `-b` is invalid without `-r`.
 
-    For example, `ason2j input.json` without an output hint performs no conversion. Use `-r`,
-    `-t`, `-b`, or an ASON/ASONB output extension to convert JSON input.
+    An output file name must match the output format: `.json` for JSON, `.ason` for ASON, and
+    `.asonb` for ASONB. Any other name, including `.jsonc` or no extension, is a format
+    conflict. This check does not apply to standard output.
+
+    Exit status 1 means the command line itself is invalid, regardless of the input or file
+    names, such as `-b` without `-r`. Exit status 2 means the options are valid on their own but
+    contradict the actual input or output, such as `-r` with an `.ason` input, `-r` without `-b`
+    with an `.asonb` output file, or a `.json` input without `-r`, or the input document itself is
+    invalid. Format conflicts are detected before the output is opened, so no output file is
+    created or overwritten.
 
     If no input file is specified, input is read from standard input.
 
@@ -59,8 +67,8 @@ EXAMPLES
       ason2j input.asonb -o output.json
 
     * Convert a JSON file to ASON or ASONB
-      ason2j input.json -o output.ason
-      ason2j input.json -o output.asonb
+      ason2j -r input.json -o output.ason
+      ason2j -r -b input.json -o output.asonb
 
     * Convert JSON from standard input to ASON on standard output
       echo '{"key": "value"}' | ason2j -r
@@ -69,4 +77,4 @@ EXAMPLES
       ason2j -r input.json
 
     * Convert a JSON file to ASONB and pipe it back to JSON
-      ason2j input.json -b | ason2j
+      ason2j -r input.json -b | ason2j

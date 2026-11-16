@@ -8,8 +8,7 @@ ARGUMENTS
     INPUT                   Input file (defaults to standard input)
 
 OPTIONS
-    -t, --text              Force conversion from ASONB to ASON
-    -b, --binary            Force conversion from ASON to ASONB
+    -r, --reverse           Convert ASONB input to ASON
     -o, --output OUTPUT     Write output to this file (defaults to standard output)
         --complete SHELL    Print a completion script to standard output
                             Supported shells: bash, zsh, fish, PowerShell
@@ -18,25 +17,30 @@ OPTIONS
 
 EXIT STATUS
     0   Successful conversion, help, version, or completion output
-    1   Invalid arguments, such as an unknown option, conflicting options, or an unsupported
-        completion shell
+    1   Invalid arguments, such as an unknown option or an unsupported completion shell
     2   Invalid input, a format conflict, or ASONB output directed to a terminal
     3   Failed conversion: the input is valid but cannot be represented in the output format
     4   I/O error while reading the input or writing the output
-    5   No conversion was performed because the input already has the output format
 
 DESCRIPTION
-    Input extensions `.ason` and `.asonb` select ASON and ASONB, respectively; `.json` and
-    `.jsonc` inputs are rejected. Extensions are case-sensitive. A recognized input extension
-    takes precedence over the input header. Without one, the ASONB header selects binary input;
-    otherwise, the input is treated as ASON.
+    By default, the command converts ASON input to ASONB output. With `-r`, it converts ASONB
+    input to ASON output.
 
-    Output extensions `.ason` and `.asonb` select the output format. Without a recognized output
-    extension or a mode flag, the output format is the opposite of the input format.
+    Input extensions `.ason` and `.asonb` select ASON and ASONB, respectively. Extensions
+    are case-sensitive. A recognized input extension takes precedence over the input header.
+    Without one, the ASONB header selects binary input; otherwise, the input is treated as
+    ASON. An input that does not match the direction, such as ASONB input without `-r`,
+    is a format conflict.
 
-    Use `-t` to require ASONB input and produce ASON, or `-b` to require ASON input and produce
-    ASONB. The two flags cannot be combined and must agree with any recognized output extension.
-    If the input and output formats are the same, no conversion is performed.
+    The output file name must match the direction: `.asonb` by default and `.ason` with `-r`.
+    Any other name or a name with no extension is a format conflict. This check does not apply
+    to standard output.
+
+    Exit status 1 means the command line itself is invalid, regardless of the input or file
+    names, such as an unknown option. Exit status 2 means the options are valid on their own but
+    contradict the actual input or output, such as ASONB input without `-r`, `-r` with ASON input,
+    or an `.ason` output file without `-r`, or the input document itself is invalid. Format
+    conflicts are detected before the output is opened, so no output file is created or overwritten.
 
     If no input file is specified, input is read from standard input.
 
@@ -50,10 +54,10 @@ EXAMPLES
       ason2b input.ason -o output.asonb
 
     * Convert an ASONB file to ASON
-      ason2b input.asonb -o output.ason
+      ason2b -r input.asonb -o output.ason
 
     * Convert ASON from standard input to an ASONB file
       echo '{key: "value"}' | ason2b -o output.asonb
 
     * Convert ASON from standard input to ASONB, then back to ASON
-      echo '{key: "value"}' | ason2b | ason2b
+      echo '{key: "value"}' | ason2b | ason2b -r

@@ -12,7 +12,6 @@
 //!   documents. [`asonb_reader_to_ason`] also supports streaming certain ASONB Lists.
 //! - [`ason_to_json`], [`asonb_to_json`], and [`asonb_reader_to_json`] produce JSON.
 //! - [`json_to_ason`] and [`json_to_asonb`] accept JSON or JSONC and infer ASON types.
-//!   [`format_json`] accepts the same input without converting it to ASON.
 //!
 //! All functions return a [`ConversionError`] on failure; its [`ConversionErrorKind`] tells
 //! invalid input apart from unconvertible values and I/O failures. The string and byte-vector functions
@@ -47,5 +46,5 @@ pub use ason_converter::{
     ConversionError, ConversionErrorKind, ason_to_asonb, asonb_reader_to_ason, asonb_to_ason,
 };
 pub use json_converter::{
-    ason_to_json, asonb_reader_to_json, asonb_to_json, format_json, json_to_ason, json_to_asonb,
+    ason_to_json, asonb_reader_to_json, asonb_to_json, json_to_ason, json_to_asonb,
 };
