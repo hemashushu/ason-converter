@@ -19,8 +19,8 @@ use chrono::SecondsFormat;
 use serde_json::{Map, Number, Value as JsonValue};
 
 use crate::{
-    ConversionError, Result,
-    ason_converter::{from_asonb_value, with_tracked_io},
+    ason_converter::from_asonb_value,
+    error::{ConversionError, Result, with_tracked_io},
     jsonc::JsonInput,
 };
 
@@ -1160,14 +1160,7 @@ fn is_valid_identifier(value: &str) -> bool {
         && chars.all(|character| valid_start(character) || character.is_ascii_digit())
         && !matches!(
             value,
-            "true"
-                | "false"
-                | "NaN"
-                | "NaN_f32"
-                | "NaN_f64"
-                | "Inf"
-                | "Inf_f32"
-                | "Inf_f64"
+            "true" | "false" | "NaN" | "NaN_f32" | "NaN_f64" | "Inf" | "Inf_f32" | "Inf_f64"
         )
 }
 

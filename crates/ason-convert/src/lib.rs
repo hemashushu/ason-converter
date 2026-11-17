@@ -38,13 +38,12 @@
 //! ```
 
 mod ason_converter;
+mod error;
 mod json_converter;
 mod jsonc;
 
-pub(crate) use ason_converter::Result;
-pub use ason_converter::{
-    ConversionError, ConversionErrorKind, ason_to_asonb, asonb_reader_to_ason, asonb_to_ason,
-};
+pub use ason_converter::{ason_to_asonb, asonb_reader_to_ason, asonb_to_ason};
+pub use error::{ConversionError, ConversionErrorKind};
 pub use json_converter::{
     ason_to_json, asonb_reader_to_json, asonb_to_json, json_to_ason, json_to_asonb,
 };

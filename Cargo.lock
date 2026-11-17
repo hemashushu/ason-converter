@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "ason-convert"
-version = "1.5.0"
+version = "2.0.0"
 dependencies = [
  "ason",
  "asonb",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "ason2b"
-version = "1.5.0"
+version = "2.0.0"
 dependencies = [
  "ason-convert",
  "clap",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "ason2j"
-version = "1.5.0"
+version = "2.0.0"
 dependencies = [
  "ason-convert",
  "asonb",

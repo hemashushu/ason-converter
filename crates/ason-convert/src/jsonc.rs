@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
-use crate::{ConversionError, Result};
+use crate::error::{ConversionError, Result};
 
 #[derive(Debug, Clone, PartialEq)]
 /// A JSON value retained in source order for type inference during ASON conversion.

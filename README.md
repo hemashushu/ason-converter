@@ -174,7 +174,7 @@ Or add the dependency to your project's `Cargo.toml`:
 
 ```toml
 [dependencies]
-ason-convert = "1.5.0"  # Use the latest version of the ason-convert library
+ason-convert = "2.0.0"  # Use the latest version of the ason-convert library
 ```
 
 For example, convert ASON to ASONB, back to ASON, and then to JSON:
