@@ -1,6 +1,6 @@
 [package]
 name = "ason-convert"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 
 license-file = "LICENSE.additional"
@@ -11,8 +11,8 @@ keywords = ["ason", "asonb", "json", "jsonc", "converter"]
 categories = ["encoding", "parsing"]
 
 [dependencies]
-ason = "4.1.0"
-asonb = "4.1.0"
+ason = "4.1.1"
+asonb = "4.1.1"
 base64 = "0.23"
 chrono = "0.4"
 serde = "1.0"

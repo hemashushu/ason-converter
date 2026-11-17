@@ -1,6 +1,8 @@
 # ASON Converter
 
-ASON Converter provides the Rust library `ason-convert` and two command-line tools, `ason2b` and `ason2j`, for converting between ASON, ASONB (ASON's binary format), JSON, and JSONC.
+ASON Converter provides the Rust library `ason-convert` and two command-line tools, `ason2b` and `ason2j`, for converting between [ASON](https://github.com/hemashushu/ason), [ASONB](https://github.com/hemashushu/asonb) (ASON's binary format), JSON, and JSONC.
+
+ASON is a strongly typed, JSON-like data format built as a common language for AI agents, tools, and people, and ASON Converter connects it with existing JSON-based tools and data.
 
 <!-- @import "[TOC]" {cmd="toc" depthFrom=2 depthTo=4 orderedList=false} -->
 
